@@ -145,6 +145,37 @@
   cursor: not-allowed;
 }
 
+.ghost {
+  width: 100%;
+  margin-top: 0.45rem;
+  border: 1px solid var(--lane);
+  background: transparent;
+  color: var(--chalk);
+  border-radius: 10px;
+  padding: 0.55rem 0.75rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ghost:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.error-banner {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+  background: rgba(255, 90, 95, 0.15);
+  border: 1px solid rgba(255, 90, 95, 0.45);
+  color: #ffc9cb;
+}
+
+.hint {
+  color: #6d7b88;
+  font-size: 0.85rem;
+}
+
 .signal-row {
   display: flex;
   align-items: center;

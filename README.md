@@ -10,7 +10,7 @@ and correctness invariants.
 |-------|------|
 | Engine | Java 17 + Maven (`src/main/java`) |
 | UI | **React + TypeScript + Vite** (`web/`) — not JavaFX |
-| Link | HTTP API next (React talks to `CitySession`) |
+| Link | HTTP API on `:8080` (`com.traffic.api.ApiMain`) → React via Vite proxy |
 
 ## Goals
 
@@ -31,22 +31,31 @@ and correctness invariants.
 | `routing` | Pathfinding + cost model |
 | `rules` | Congestion, accidents, replan |
 | `sim` | Tick loop, `CitySession` Build/Play |
+| `api` | HTTP JSON API for React |
 | `invariant` | Capacity + fuel checks |
 | `config` | Simulation + city-gen knobs |
 
 ## Build & run
 
-**Engine**
+**Engine (CLI demo)**
 
 ```bash
 mvn test
 mvn -q exec:java
 ```
 
-**UI (preview, mock data until API exists)**
+**API (for React)**
+
+```bash
+mvn -q exec:java -Dexec.mainClass=com.traffic.api.ApiMain
+```
+
+**UI**
 
 ```bash
 cd web
 npm install
 npm run dev
 ```
+
+Open the Vite URL. `/api` is proxied to `localhost:8080`.

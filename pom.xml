@@ -40,6 +40,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>17</maven.compiler.release>
         <junit.version>5.10.2</junit.version>
+        <jackson.version>2.17.2</jackson.version>
+        <exec.mainClass>com.traffic.Main</exec.mainClass>
     </properties>
 
 
@@ -49,6 +51,11 @@
             <artifactId>junit-jupiter</artifactId>
             <version>${junit.version}</version>
             <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
         </dependency>
     </dependencies>
 
@@ -72,7 +79,7 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.4.0</version>
                 <configuration>
-                    <mainClass>com.traffic.Main</mainClass>
+                    <mainClass>${exec.mainClass}</mainClass>
                 </configuration>
             </plugin>
         </plugins>

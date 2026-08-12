@@ -1,72 +1,71 @@
-import type { LightColor, MockAccident, SessionMode } from "../types";
+import type { EdgeDto, NodeDto, AccidentDto, VehicleDto, SessionMode } from "../types";
 
 type Props = {
   mode: SessionMode;
-  accidents: MockAccident[];
-  light: LightColor;
+  nodes: NodeDto[];
+  edges: EdgeDto[];
+  accidents: AccidentDto[];
+  vehicles: VehicleDto[];
+  selectedFrom: number | null;
+  onSelectNode: (id: number) => void;
 };
 
-const NODES = [
-  { id: 0, x: 40, y: 40, label: "R0C0" },
-  { id: 1, x: 160, y: 40, label: "R0C1" },
-  { id: 2, x: 280, y: 40, label: "R0C2" },
-  { id: 3, x: 40, y: 160, label: "R1C0" },
-  { id: 4, x: 160, y: 160, label: "R1C1" },
-  { id: 5, x: 280, y: 160, label: "R1C2" },
-  { id: 6, x: 40, y: 280, label: "R2C0" },
-  { id: 7, x: 160, y: 280, label: "R2C1" },
-  { id: 8, x: 280, y: 280, label: "R2C2" },
-];
+export function CityMap({
+  mode,
+  nodes,
+  edges,
+  accidents,
+  vehicles,
+  selectedFrom,
+  onSelectNode,
+}: Props) {
+  const crashed = new Set(accidents.filter((a) => a.showCross).map((a) => a.edgeId));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
 
-const EDGES = [
-  { id: 0, from: 0, to: 1 },
-  { id: 1, from: 1, to: 2 },
-  { id: 2, from: 0, to: 3 },
-  { id: 3, from: 1, to: 4 },
-  { id: 4, from: 2, to: 5 },
-  { id: 5, from: 3, to: 4 },
-  { id: 6, from: 4, to: 5 },
-  { id: 7, from: 3, to: 6 },
-  { id: 8, from: 4, to: 7 },
-  { id: 9, from: 5, to: 8 },
-  { id: 10, from: 6, to: 7 },
-  { id: 11, from: 7, to: 8 },
-];
+  const maxX = Math.max(1, ...nodes.map((n) => n.x));
+  const maxY = Math.max(1, ...nodes.map((n) => n.y));
+  const pad = 28;
+  const width = maxX + pad * 2;
+  const height = maxY + pad * 2;
 
-function node(id: number) {
-  return NODES.find((n) => n.id === id)!;
-}
-
-export function CityMap({ mode, accidents, light }: Props) {
-  const crashed = new Set(accidents.map((a) => a.edgeId));
-  const stroke =
-    light === "GREEN" ? "#2ee59d" : light === "YELLOW" ? "#ffc857" : "#ff5a5f";
+  function sx(x: number) {
+    return x + pad;
+  }
+  function sy(y: number) {
+    return y + pad;
+  }
 
   return (
-    <svg viewBox="0 0 320 320" className="city-map" role="img" aria-label="Preview city grid">
-      {EDGES.map((e) => {
-        const a = node(e.from);
-        const b = node(e.to);
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      className="city-map"
+      role="img"
+      aria-label="City map from Java session"
+    >
+      {edges.map((e) => {
+        const a = byId.get(e.from);
+        const b = byId.get(e.to);
+        if (!a || !b) return null;
         const hit = crashed.has(e.id);
         return (
           <g key={e.id}>
             <line
-              x1={a.x}
-              y1={a.y}
-              x2={b.x}
-              y2={b.y}
+              x1={sx(a.x)}
+              y1={sy(a.y)}
+              x2={sx(b.x)}
+              y2={sy(b.y)}
               stroke={hit ? "#ff5a5f" : "#5a6572"}
-              strokeWidth={hit ? 5 : 3}
+              strokeWidth={hit ? 4 : 2.5}
               strokeLinecap="round"
             />
             {hit && (
               <text
-                x={(a.x + b.x) / 2}
-                y={(a.y + b.y) / 2}
+                x={(sx(a.x) + sx(b.x)) / 2}
+                y={(sy(a.y) + sy(b.y)) / 2}
                 textAnchor="middle"
                 dominantBaseline="middle"
                 fill="#ff5a5f"
-                fontSize="18"
+                fontSize="14"
                 fontWeight="700"
               >
                 ✕
@@ -75,16 +74,60 @@ export function CityMap({ mode, accidents, light }: Props) {
           </g>
         );
       })}
-      {NODES.map((n) => (
-        <g key={n.id}>
-          <circle cx={n.x} cy={n.y} r={10} fill="#1a1f24" stroke={stroke} strokeWidth="2.5" />
-          <text x={n.x} y={n.y + 22} textAnchor="middle" fill="#9aa8b5" fontSize="8">
-            {n.label}
-          </text>
+
+      {vehicles.map((v) => {
+        if (v.positionType === "AT_NODE" && v.nodeId != null) {
+          const n = byId.get(v.nodeId);
+          if (!n) return null;
+          return (
+            <circle
+              key={`car-${v.id}`}
+              cx={sx(n.x)}
+              cy={sy(n.y)}
+              r={4}
+              fill={v.arrived ? "#2ee59d" : "#4cc9f0"}
+            />
+          );
+        }
+        if (v.positionType === "ON_EDGE" && v.edgeId != null) {
+          const edge = edges.find((e) => e.id === v.edgeId);
+          if (!edge) return null;
+          const a = byId.get(edge.from);
+          const b = byId.get(edge.to);
+          if (!a || !b) return null;
+          const t = 0.45;
+          return (
+            <circle
+              key={`car-${v.id}`}
+              cx={sx(a.x) * (1 - t) + sx(b.x) * t}
+              cy={sy(a.y) * (1 - t) + sy(b.y) * t}
+              r={4}
+              fill="#ffc857"
+            />
+          );
+        }
+        return null;
+      })}
+
+      {nodes.map((n) => (
+        <g key={n.id} onClick={() => mode === "BUILD" && onSelectNode(n.id)} style={{ cursor: mode === "BUILD" ? "pointer" : "default" }}>
+          <circle
+            cx={sx(n.x)}
+            cy={sy(n.y)}
+            r={selectedFrom === n.id ? 9 : 7}
+            fill="#1a1f24"
+            stroke={selectedFrom === n.id ? "#4cc9f0" : "#9aa8b5"}
+            strokeWidth="2"
+          />
         </g>
       ))}
-      <text x="16" y="18" fill="#9aa8b5" fontSize="10">
-        {mode === "BUILD" ? "BUILD · click/drag coming soon" : "PLAY · live overlay preview"}
+
+      <text x={12} y={16} fill="#9aa8b5" fontSize="11">
+        {mode === "BUILD"
+          ? selectedFrom == null
+            ? "BUILD · click two nodes to draw a road"
+            : `From node ${selectedFrom} · click destination`
+          : "PLAY · live Java session"}
       </text>
     </svg>
   );
