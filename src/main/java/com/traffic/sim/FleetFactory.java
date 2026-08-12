@@ -12,6 +12,7 @@ import com.traffic.routing.Path;
 import com.traffic.routing.RouteEstimator;
 import com.traffic.routing.Router;
 import com.traffic.routing.Routers;
+import com.traffic.routing.RoutingAlgorithm;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -122,14 +123,19 @@ public final class FleetFactory {
         if (nodes.size() < 2) {
             throw new IllegalArgumentException("Need at least 2 nodes to spawn trips");
         }
+        Router router = Routers.create(RoutingAlgorithm.DIJKSTRA, graph);
+        EdgeCost base = EdgeCost.baseWeight();
         Random rng = new Random(seed);
         AtomicInteger n = new AtomicInteger();
         List<Trip> trips = new ArrayList<>();
         int guard = 0;
-        while (trips.size() < count && guard++ < count * 20) {
+        while (trips.size() < count && guard++ < count * 80) {
             Node start = nodes.get(rng.nextInt(nodes.size()));
             Node goal = nodes.get(rng.nextInt(nodes.size()));
             if (start.id().equals(goal.id())) {
+                continue;
+            }
+            if (router.findPath(graph, start.id(), goal.id(), base).isEmpty()) {
                 continue;
             }
             trips.add(new Trip(
@@ -138,8 +144,9 @@ public final class FleetFactory {
                     CarNames.forIndex(n.getAndIncrement())
             ));
         }
-        if (trips.size() < count) {
-            throw new IllegalStateException("Could not sample enough distinct trips");
+        if (trips.isEmpty()) {
+            throw new IllegalStateException(
+                    "Could not place trips — the map looks disconnected. Add roads or regenerate the city.");
         }
         return List.copyOf(trips);
     }
@@ -174,14 +181,19 @@ public final class FleetFactory {
         int jobCount = Math.max(1, Math.min(nodes.size() / 3, jobs.size()));
         jobs = jobs.subList(0, jobCount);
 
+        Router router = Routers.create(RoutingAlgorithm.DIJKSTRA, graph);
+        EdgeCost base = EdgeCost.baseWeight();
         Random rng = new Random(seed);
         AtomicInteger n = new AtomicInteger((int) Math.floorMod(seed, 97));
         List<Trip> trips = new ArrayList<>();
         int guard = 0;
-        while (trips.size() < count && guard++ < count * 30) {
+        while (trips.size() < count && guard++ < count * 100) {
             Node start = homes.get(rng.nextInt(homes.size()));
             Node goal = jobs.get(rng.nextInt(jobs.size()));
             if (start.id().equals(goal.id())) {
+                continue;
+            }
+            if (router.findPath(graph, start.id(), goal.id(), base).isEmpty()) {
                 continue;
             }
             trips.add(new Trip(start.id(), goal.id(), CarNames.forIndex(n.getAndIncrement())));

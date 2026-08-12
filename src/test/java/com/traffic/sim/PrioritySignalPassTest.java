@@ -58,6 +58,8 @@ class PrioritySignalPassTest {
         assertEquals(LightColor.GREEN, nsLight.color(), "ambulance approach must cut green");
         assertTrue(ambulance.position() instanceof VehiclePosition.OnEdge,
                 "ambulance must not sit on red for civilians");
+        assertTrue(civilian.position() instanceof VehiclePosition.AtNode,
+                "civilian must wait while ambulance cuts through");
     }
 
     @Test
@@ -92,5 +94,67 @@ class PrioritySignalPassTest {
         assertTrue(fire.position() instanceof VehiclePosition.OnEdge);
         // VIP must wait — stopping benefits the system (higher-rank fire).
         assertTrue(vip.position() instanceof VehiclePosition.AtNode);
+    }
+
+    @Test
+    void ambulancePreemptsVipAtSignal() {
+        NodeId a = new NodeId(0);
+        NodeId b = new NodeId(1);
+        NodeId c = new NodeId(2);
+        EdgeId ns = new EdgeId(0);
+        EdgeId ew = new EdgeId(1);
+        RoadGraph graph = new GraphBuilder()
+                .addNode(a, "A").addNode(b, "B").addNode(c, "C")
+                .addEdge(ns, a, b, 1, 2)
+                .addEdge(ew, a, c, 1, 2)
+                .build();
+
+        TrafficLight nsLight = new TrafficLight("NS", Set.of(ns), new LightTiming(4, 1, 4), LightColor.GREEN);
+        TrafficLight ewLight = new TrafficLight("EW", Set.of(ew), new LightTiming(4, 1, 4), LightColor.RED);
+        SignalNetwork signals = new SignalNetwork(
+                List.of(nsLight, ewLight), List.of(new SignalNetwork.Pair(nsLight, ewLight)));
+
+        Vehicle vip = new Vehicle(
+                new VehicleId(0), a, b, 40, new Path(List.of(ns), 1), 1, 1, 0, "VIP", ServiceClass.VIP, 0);
+        Vehicle amb = new Vehicle(
+                new VehicleId(1), a, c, 40, new Path(List.of(ew), 1), 1, 1, 0, "Amb", ServiceClass.AMBULANCE, 0);
+
+        Simulation sim = new Simulation(
+                new TrafficState(graph), signals, List.of(vip, amb), 80,
+                null, false, 8, new CorridorBoard(), ControlPolicy.CITY_FLOW);
+        sim.step();
+
+        assertEquals(LightColor.GREEN, ewLight.color(), "ambulance must take the junction");
+        assertEquals(LightColor.RED, nsLight.color(), "VIP approach must go red");
+        assertTrue(amb.position() instanceof VehiclePosition.OnEdge);
+        assertTrue(vip.position() instanceof VehiclePosition.AtNode, "VIP waits at the signal");
+    }
+
+    @Test
+    void emergencyGetsSharedEdgeSlotBeforeVip() {
+        NodeId a = new NodeId(0);
+        NodeId b = new NodeId(1);
+        EdgeId e = new EdgeId(0);
+        RoadGraph graph = new GraphBuilder()
+                .addNode(a, "A").addNode(b, "B")
+                .addEdge(e, a, b, 1, 1)
+                .build();
+
+        // Unpaired light stays green under FlowGuard.
+        TrafficLight gate = new TrafficLight("G", Set.of(e), new LightTiming(4, 1, 4), LightColor.GREEN);
+        SignalNetwork signals = new SignalNetwork(List.of(gate));
+
+        Vehicle vip = new Vehicle(
+                new VehicleId(0), a, b, 40, new Path(List.of(e), 1), 1, 1, 0, "VIP", ServiceClass.VIP, 0);
+        Vehicle amb = new Vehicle(
+                new VehicleId(1), a, b, 40, new Path(List.of(e), 1), 1, 1, 0, "Amb", ServiceClass.AMBULANCE, 0);
+
+        Simulation sim = new Simulation(
+                new TrafficState(graph), signals, List.of(vip, amb), 80,
+                null, false, 8, new CorridorBoard(), ControlPolicy.CITY_FLOW);
+        sim.step();
+
+        assertTrue(amb.position() instanceof VehiclePosition.OnEdge, "ambulance takes the only slot");
+        assertTrue(vip.position() instanceof VehiclePosition.AtNode, "VIP yields the slot");
     }
 }

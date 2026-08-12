@@ -49,19 +49,19 @@ public final class GridSignalPlanner {
                 }
             }
 
-            boolean nsFirst = (node.id().value() % 2 == 0);
+            // FlowGuard starts all-clear; red appears only under real conflict / VIP cut.
             if (!northSouth.isEmpty() && !eastWest.isEmpty()) {
                 TrafficLight ns = new TrafficLight(
                         lightName(node.id(), "NS"),
                         northSouth,
                         synced,
-                        nsFirst ? LightColor.GREEN : LightColor.RED
+                        LightColor.GREEN
                 );
                 TrafficLight ew = new TrafficLight(
                         lightName(node.id(), "EW"),
                         eastWest,
                         synced,
-                        nsFirst ? LightColor.RED : LightColor.GREEN
+                        LightColor.GREEN
                 );
                 lights.add(ns);
                 lights.add(ew);
@@ -74,7 +74,7 @@ public final class GridSignalPlanner {
                         lightName(node.id(), "ALL"),
                         all,
                         synced,
-                        nsFirst ? LightColor.GREEN : LightColor.RED
+                        LightColor.GREEN
                 ));
             }
         }

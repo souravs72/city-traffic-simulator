@@ -208,6 +208,20 @@ public final class Simulation {
                     .thenComparingInt(v -> -waitTicksByVehicle.getOrDefault(v.id(), 0)));
         }
 
+        // Highest rank waiting to enter each edge — VIP/civilians hold so emergency gets the slot.
+        Map<EdgeId, Integer> highestWaitingRank = Map.of();
+        if (policy.honorPriority()) {
+            Map<EdgeId, Integer> ranks = new HashMap<>();
+            for (Vehicle vehicle : atNodes) {
+                if (!vehicle.mayDepartAt(tick) || !vehicle.hasRemainingEdges()) {
+                    continue;
+                }
+                vehicle.peekNextEdge().ifPresent(edgeId ->
+                        ranks.merge(edgeId, vehicle.serviceClass().rank(), Math::max));
+            }
+            highestWaitingRank = ranks;
+        }
+
         for (Vehicle vehicle : departOrder) {
             if (!vehicle.mayDepartAt(tick)) {
                 continue;
@@ -219,6 +233,13 @@ public final class Simulation {
             if (policy.honorPriority()
                     && corridors.blocks(next, vehicle.serviceClass())) {
                 continue;
+            }
+            if (policy.honorPriority()) {
+                int heldFor = highestWaitingRank.getOrDefault(next, 0);
+                if (vehicle.serviceClass().rank() < heldFor) {
+                    // Fair ladder: yield this departure to FIRE/AMBULANCE/POLICE ahead of VIP/civilians.
+                    continue;
+                }
             }
             if (signalAllows(vehicle, next) && traffic.tryEnter(next)) {
                 Edge edge = traffic.graph().requireEdge(next);

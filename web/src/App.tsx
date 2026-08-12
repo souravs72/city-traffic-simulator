@@ -8,7 +8,6 @@ import type { PolicyCompare } from "./api";
 const TICK_MS = 1000;
 
 const PRESETS: { id: CityPreset; label: string }[] = [
-  { id: "BLANK", label: "Blank" },
   { id: "PLAYGROUND", label: "Playground" },
   { id: "DOWNTOWN", label: "Downtown" },
   { id: "MEGACITY", label: "Megacity" },
@@ -55,7 +54,7 @@ export default function App() {
   const [tripFrom, setTripFrom] = useState<number | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<number | null>(null);
-  const [preset, setPreset] = useState<CityPreset>("BLANK");
+  const [preset, setPreset] = useState<CityPreset>("PLAYGROUND");
   const [tool, setTool] = useState<MapTool>("NODE");
   const [clockRunning, setClockRunning] = useState(false);
   const [showLights, setShowLights] = useState(false);
@@ -89,7 +88,7 @@ export default function App() {
   async function boot(nextPreset: CityPreset = preset, replaceSaved = false) {
     if (session && !replaceSaved) {
       const ok = window.confirm(
-        `Replace your saved city with ${nextPreset}? This overwrites auto-save. Use New city for a blank canvas.`,
+        `Replace your saved city with ${nextPreset}? This overwrites auto-save.`,
       );
       if (!ok) return;
       replaceSaved = true;
@@ -116,14 +115,14 @@ export default function App() {
   }
 
   async function startNewCity() {
-    if (!window.confirm("Start a new blank city? Your current map will be replaced.")) {
+    if (!window.confirm("Start a new Playground city? Your current map will be replaced.")) {
       return;
     }
     setClockRunning(false);
     setBusy(true);
     try {
       apply(await api.newCity());
-      setPreset("BLANK");
+      setPreset("PLAYGROUND");
       clearSelection();
       setTool("NODE");
     } catch (e) {
@@ -141,7 +140,7 @@ export default function App() {
         apply(existing);
         setError(null);
       } catch {
-        await boot("BLANK", true);
+        await boot("PLAYGROUND", true);
       } finally {
         setBusy(false);
       }
@@ -421,17 +420,48 @@ export default function App() {
                   </button>
                 ))}
                 {serviceClass === "VIP" && (
-                  <label className="tool-hint" style={{ marginLeft: 8 }}>
-                    Depart @t=
-                    <input
-                      type="number"
-                      min={0}
-                      value={vipDepartTick}
-                      disabled={busy}
-                      onChange={(e) => setVipDepartTick(Number(e.target.value) || 0)}
-                      style={{ width: 48, marginLeft: 4 }}
-                    />
-                  </label>
+                  <div className="vip-depart" role="group" aria-label="VIP departure tick">
+                    <span className="vip-depart-badge" aria-hidden>
+                      VIP
+                    </span>
+                    <div className="vip-depart-body">
+                      <span className="vip-depart-label">Depart</span>
+                      <div className="vip-depart-stepper">
+                        <button
+                          type="button"
+                          className="vip-depart-btn"
+                          disabled={busy || vipDepartTick <= 0}
+                          aria-label="Earlier departure"
+                          onClick={() => setVipDepartTick((t) => Math.max(0, t - 1))}
+                        >
+                          −
+                        </button>
+                        <label className="vip-depart-field">
+                          <span className="vip-depart-at">t</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={999}
+                            value={vipDepartTick}
+                            disabled={busy}
+                            onChange={(e) =>
+                              setVipDepartTick(Math.max(0, Number(e.target.value) || 0))
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="vip-depart-btn"
+                          disabled={busy}
+                          aria-label="Later departure"
+                          onClick={() => setVipDepartTick((t) => t + 1)}
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                    <span className="vip-depart-hint">locks corridor early</span>
+                  </div>
                 )}
               </div>
             )}
@@ -440,7 +470,8 @@ export default function App() {
             )}
             {clockRunning && (
               <p className="tool-hint live-hint">
-                Live · {(session.controlPolicy ?? "CITY_FLOW") === "MAPS_LIKE" ? "Maps-like" : "CityFlow priority"} · FlowGuard
+                Live · {(session.controlPolicy ?? "CITY_FLOW") === "MAPS_LIKE" ? "Maps-like" : "CityFlow"} ·
+                {" "}locks divert civilians · capacity jams force detours · cars ease between ticks
               </p>
             )}
             <div className="tool-actions">
@@ -521,19 +552,38 @@ export default function App() {
                 <i className="swatch alley" /> alley
               </span>
               <span>
-                <i className="dot heat" /> busy
+                <i className="mark car" /> cars
+              </span>
+              <span>
+                <i className="dot heat" /> jam heat
+              </span>
+              <span>
+                <i className="swatch lock" /> VIP/emergency lock
+              </span>
+              <span>
+                <i className="swatch soft" /> soft buffer
+              </span>
+              <span>
+                <i className="swatch detour" /> civilian detour
               </span>
               {signalsVisible && (
                 <>
                   <span>
-                    <i className="dot go" /> go
+                    <i className="mark signal go" /> go
                   </span>
                   <span>
-                    <i className="dot wait" /> wait
+                    <i className="mark signal wait" /> stop
                   </span>
                 </>
               )}
             </div>
+            {(session.corridorActive || (session.jammedEdgeCount ?? 0) > 0) && (
+              <p className="tool-hint live-hint" style={{ marginTop: 6 }}>
+                {session.corridorActive
+                  ? "Purple LOCK = closed to civilians · teal dashed = open detours · jams auto-reroute via capacity"
+                  : `${session.jammedEdgeCount} jammed road(s) — cars replan around full capacity`}
+              </p>
+            )}
             {hasSelection && (
               <div className="selection-inline">
                 {selectedNodeId != null && (
@@ -576,7 +626,7 @@ export default function App() {
             >
               New city
             </button>
-            <p className="hint">Auto-saves forever until you confirm a preset replace or New city.</p>
+            <p className="hint">Auto-saves until you confirm a preset replace. New city opens Playground.</p>
             <div className="seg" style={{ marginTop: 10 }}>
               <button
                 type="button"

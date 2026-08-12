@@ -103,10 +103,10 @@ public final class SessionHub {
         return SnapshotMapper.from(session);
     }
 
-    /** Wipe save and start a fresh blank canvas. */
+    /** Wipe save and start a fresh Playground city (editable starter map). */
     public synchronized SessionSnapshotDto newCity() {
         store.clear();
-        return create(new CreateSessionRequest("BLANK", 0, 0, 0, 42L, 0, 300));
+        return create(new CreateSessionRequest("PLAYGROUND", 0, 0, 0, 42L, 0, 300, true));
     }
 
     public synchronized SessionSnapshotDto snapshot() {

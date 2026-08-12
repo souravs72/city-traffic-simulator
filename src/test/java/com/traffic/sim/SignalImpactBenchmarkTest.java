@@ -115,8 +115,8 @@ class SignalImpactBenchmarkTest {
                 enteredBy = t + 1;
             }
         }
-        assertTrue(enteredBy > 0 && enteredBy <= 3,
-                "NS demand with empty EW should get green quickly; enteredBy=" + enteredBy);
+        assertTrue(enteredBy > 0 && enteredBy <= 1,
+                "NS demand with empty EW should get green immediately; enteredBy=" + enteredBy);
         assertEquals(LightColor.GREEN, ns.color());
     }
 

@@ -16,26 +16,27 @@ class PressureSignalTest {
         TrafficLight ns = new TrafficLight("NS", Set.of(new EdgeId(1)), 3, 1, 3, LightColor.RED);
         TrafficLight ew = new TrafficLight("EW", Set.of(new EdgeId(2)), 3, 1, 3, LightColor.GREEN);
 
-        // Only NS has demand — EW should clear and NS should get green without staying red forever.
+        // One-sided demand: skip yellow — both stay open (no real conflict).
         SignalNetwork.controlPair(ns, ew, 4, 0);
-        assertEquals(LightColor.YELLOW, ew.color());
-
-        SignalNetwork.controlPair(ns, ew, 4, 0);
-        assertTrue(ns.color() == LightColor.GREEN || ew.color() == LightColor.YELLOW);
-        // Finish yellow
-        while (ew.color() == LightColor.YELLOW) {
-            SignalNetwork.controlPair(ns, ew, 4, 0);
-        }
         assertEquals(LightColor.GREEN, ns.color());
-        assertEquals(LightColor.RED, ew.color());
+        assertEquals(LightColor.GREEN, ew.color());
     }
 
     @Test
-    void idleJunctionKeepsOneApproachGreen() {
+    void idleJunctionKeepsBothApproachesGreen() {
         TrafficLight a = new TrafficLight("A", Set.of(new EdgeId(1)), 2, 1, 2, LightColor.RED);
         TrafficLight b = new TrafficLight("B", Set.of(new EdgeId(2)), 2, 1, 2, LightColor.RED);
         SignalNetwork.controlPair(a, b, 0, 0);
-        assertTrue(a.color() == LightColor.GREEN || b.color() == LightColor.GREEN);
-        assertTrue(!(a.color() == LightColor.GREEN && b.color() == LightColor.GREEN));
+        assertEquals(LightColor.GREEN, a.color());
+        assertEquals(LightColor.GREEN, b.color());
+    }
+
+    @Test
+    void dualDemandForcesExclusiveGreen() {
+        TrafficLight a = new TrafficLight("A", Set.of(new EdgeId(1)), 2, 1, 2, LightColor.RED);
+        TrafficLight b = new TrafficLight("B", Set.of(new EdgeId(2)), 2, 1, 2, LightColor.RED);
+        SignalNetwork.controlPair(a, b, 5, 3);
+        assertTrue(a.color() == LightColor.GREEN ^ b.color() == LightColor.GREEN);
+        assertTrue(a.color() == LightColor.RED || b.color() == LightColor.RED);
     }
 }

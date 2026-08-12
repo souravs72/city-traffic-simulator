@@ -11,6 +11,8 @@ public record SessionSnapshotDto(
         long arrivedCount,
         int fleetSize,
         String controlPolicy,
+        boolean corridorActive,
+        int jammedEdgeCount,
         List<NodeDto> nodes,
         List<EdgeDto> edges,
         List<VehicleDto> vehicles,

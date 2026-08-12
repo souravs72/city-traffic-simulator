@@ -10,6 +10,10 @@ import com.traffic.model.graph.RoadGraph;
 import com.traffic.model.signal.LightColor;
 import com.traffic.model.signal.LightTiming;
 import com.traffic.model.signal.SignalNetwork;
+import com.traffic.model.signal.TrafficLight;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
@@ -25,11 +29,37 @@ class GridSignalPlannerTest {
     }
 
     @Test
-    void playgroundGetsLightsAndOppositePhasesNeverBothGreen() {
+    void playgroundFlowGuardStartsAllClear() {
         RoadGraph graph = GridCityGenerator.generate(CityGenConfig.playground()).snapshot();
         SignalNetwork signals = GridSignalPlanner.forGraph(graph, LightTiming.playful());
 
         assertFalse(signals.lights().isEmpty());
+        for (TrafficLight light : signals.lights()) {
+            assertEquals(LightColor.GREEN, light.color(), light.name());
+        }
+    }
+
+    @Test
+    void fixedCycleOppositePhasesNeverBothGreen() {
+        RoadGraph graph = GridCityGenerator.generate(CityGenConfig.playground()).snapshot();
+        SignalNetwork flow = GridSignalPlanner.forGraph(graph, LightTiming.playful());
+        // Rebuild as FIXED_CYCLE with alternating starts for exclusivity check.
+        List<TrafficLight> lights = new ArrayList<>();
+        List<SignalNetwork.Pair> pairs = new ArrayList<>();
+        int i = 0;
+        for (SignalNetwork.Pair pair : flow.pairs()) {
+            boolean nsFirst = (i++ % 2 == 0);
+            TrafficLight a = new TrafficLight(
+                    pair.a().name(), pair.a().controlledEdges(),
+                    pair.a().timing(), nsFirst ? LightColor.GREEN : LightColor.RED);
+            TrafficLight b = new TrafficLight(
+                    pair.b().name(), pair.b().controlledEdges(),
+                    pair.b().timing(), nsFirst ? LightColor.RED : LightColor.GREEN);
+            lights.add(a);
+            lights.add(b);
+            pairs.add(new SignalNetwork.Pair(a, b));
+        }
+        SignalNetwork signals = new SignalNetwork(lights, pairs, SignalNetwork.ControlMode.FIXED_CYCLE);
 
         for (int t = 0; t < 12; t++) {
             for (var node : graph.nodes()) {

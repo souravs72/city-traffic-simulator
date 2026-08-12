@@ -344,8 +344,17 @@ public final class CitySession {
         Router router = Routers.create(config.routingAlgorithm(), graph);
         EdgeCost liveCost = new PriorityEdgeCost(
                 traffic, corridors, sc, config.congestionPenaltyPerCar(), controlPolicy.honorPriority());
-        Path live = router.findPath(graph, from, to, liveCost)
-                .orElseThrow(() -> new IllegalStateException("No path " + from + "→" + to));
+        Path live = router.findPath(graph, from, to, liveCost).orElse(null);
+        if (live == null) {
+            boolean topoOk = router.findPath(graph, from, to, EdgeCost.baseWeight()).isPresent();
+            if (!topoOk) {
+                throw new IllegalArgumentException(
+                        "No road connects those two places — try another pair (or add a road).");
+            }
+            throw new IllegalArgumentException(
+                    "That route is blocked right now (VIP/emergency lock or accident). "
+                            + "Pick another end, or wait for the corridor to clear.");
+        }
         int liveTicks = RouteEstimator.fromPath(graph, live).travelTicks();
         int shortestTicks = RouteEstimator.estimate(graph, router, from, to, EdgeCost.baseWeight())
                 .map(RouteEstimator.Estimate::travelTicks)
@@ -528,7 +537,16 @@ public final class CitySession {
         List<FleetFactory.Trip> trips = FleetFactory.commuteTrips(graph, count, seed);
         List<Vehicle> added = new ArrayList<>();
         for (FleetFactory.Trip trip : trips) {
-            added.add(addTrip(trip.start(), trip.goal(), trip.nickname()));
+            try {
+                added.add(addTrip(trip.start(), trip.goal(), trip.nickname()));
+            } catch (RuntimeException ignored) {
+                // corridor/accident may block a sampled pair — keep filling the wave
+            }
+        }
+        if (added.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Couldn't place rush-hour trips — map gap or active road locks. "
+                            + "Add a connecting road, clear locks, or regenerate.");
         }
         return List.copyOf(added);
     }

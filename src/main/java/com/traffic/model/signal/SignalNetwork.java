@@ -17,9 +17,10 @@ import java.util.Set;
  * <p>
  * Principles (proven in {@code SignalImpactBenchmarkTest}):
  * <ol>
- *   <li>Never deny a car when the opposing approach has nothing to serve</li>
- *   <li>Prefer the approach with highest <em>effective pressure</em> (waiters × age − spillback)</li>
- *   <li>Do not waste green feeding a road that is already at capacity</li>
+ *   <li>Red only for real conflict: both approaches demand service, or VIP+/emergency hard-cut</li>
+ *   <li>Idle / one-sided demand → keep approaches green (never red “for show”)</li>
+ *   <li>Skip yellow clearance when the vacated approach has zero occupancy</li>
+ *   <li>Prefer highest <em>effective pressure</em>; do not waste green on saturated roads</li>
  *   <li>Bound starvation so a quiet-but-waiting approach eventually gets served</li>
  * </ol>
  */
@@ -138,14 +139,15 @@ public final class SignalNetwork {
         for (Pair pair : pairs) {
             int pa = maxPriority(pair.a(), pri);
             int pb = maxPriority(pair.b(), pri);
-            // VIP+ privilege: hard-cut green unless a higher-rank unit needs the other approach.
-            // Equal ranks: brief arbitration by pressure (stopping then benefits the system).
+            // Absolute ladder at the junction: FIRE > AMBULANCE > POLICE > VIP > civilian.
+            // Emergency/VIP cut green immediately; VIP and civilians wait when a higher unit needs the cross approach.
             if (pa >= 1 || pb >= 1) {
                 if (pa > pb) {
                     servePriorityCut(pair.a(), pair.b());
                 } else if (pb > pa) {
                     servePriorityCut(pair.b(), pair.a());
                 } else if (pa > 0) {
+                    // Equal rank (e.g. two ambulances): fair pressure + wait-age arbitration.
                     int da = effectivePressure(pair.a(), traffic, waiting, ages);
                     int db = effectivePressure(pair.b(), traffic, waiting, ages);
                     if (da >= db) {
@@ -186,7 +188,8 @@ public final class SignalNetwork {
 
     /**
      * Privileged entry check: VIP/emergency may proceed on red only when no higher-rank
-     * demand is waiting on a conflicting approach (i.e. stopping would not help the system).
+     * demand is waiting on a conflicting approach.
+     * So ambulances cut past VIP/civilians; VIP never cuts past FIRE/AMBULANCE/POLICE.
      */
     public boolean allowsEntry(EdgeId edgeId, int travelerRank) {
         Objects.requireNonNull(edgeId, "edgeId");
@@ -281,25 +284,25 @@ public final class SignalNetwork {
             Map<EdgeId, Integer> waiting
     ) {
         if (a.color() == LightColor.YELLOW) {
-            boolean done = a.advanceClearance();
-            b.forceRed();
-            if (done) {
+            if (approachClear(a, traffic) || a.advanceClearance()) {
                 grantAfterClearance(a, b, da, db);
+            } else {
+                b.forceRed();
             }
             return;
         }
         if (b.color() == LightColor.YELLOW) {
-            boolean done = b.advanceClearance();
-            a.forceRed();
-            if (done) {
+            if (approachClear(b, traffic) || b.advanceClearance()) {
                 grantAfterClearance(b, a, db, da);
+            } else {
+                a.forceRed();
             }
             return;
         }
 
-        // Conflict-free: never block the only side that needs the junction.
+        // No conflict → no red. Empty junctions stay fully open.
         if (da == 0 && db == 0) {
-            keepIdleGreen(a, b);
+            keepAllClear(a, b);
             return;
         }
         if (da > 0 && db == 0) {
@@ -311,8 +314,8 @@ public final class SignalNetwork {
             return;
         }
 
-        // Both want service — max pressure with hysteresis, starvation bound, spillback awareness.
-        // Hysteresis stops phase thrash when pressures are nearly equal (wastes yellow clearance).
+        // Both want service — real conflict: one green, one red.
+        // Hysteresis stops phase thrash when pressures are nearly equal.
         final int handoffMargin = 12;
         if (a.color() == LightColor.GREEN) {
             boolean starveB = db > 0 && b.ticksDenied() >= b.starvationTicks();
@@ -321,8 +324,7 @@ public final class SignalNetwork {
                 a.holdGreen();
                 b.forceRed();
             } else if (starveB || db > da + handoffMargin || aWasted) {
-                a.beginYellow();
-                b.forceRed();
+                handoff(a, b, traffic);
             } else {
                 a.holdGreen();
                 b.forceRed();
@@ -336,8 +338,7 @@ public final class SignalNetwork {
                 b.holdGreen();
                 a.forceRed();
             } else if (starveA || da > db + handoffMargin || bWasted) {
-                b.beginYellow();
-                a.forceRed();
+                handoff(b, a, traffic);
             } else {
                 b.holdGreen();
                 a.forceRed();
@@ -390,34 +391,77 @@ public final class SignalNetwork {
         return !anyWait;
     }
 
-    private static void keepIdleGreen(TrafficLight a, TrafficLight b) {
+    /** Idle junction: both approaches green — red is reserved for real conflicts. */
+    private static void keepAllClear(TrafficLight a, TrafficLight b) {
         if (a.color() == LightColor.GREEN) {
             a.holdGreen();
-            b.forceRed();
-        } else if (b.color() == LightColor.GREEN) {
-            b.holdGreen();
-            a.forceRed();
         } else {
             a.forceGreen();
-            b.forceRed();
+        }
+        if (b.color() == LightColor.GREEN) {
+            b.holdGreen();
+        } else {
+            b.forceGreen();
         }
     }
 
-    private static void serveExclusive(TrafficLight serve, TrafficLight stop) {
+    /**
+     * One-sided demand: open the busy approach immediately.
+     * Empty opposing stays green — no conflict, so no red and no yellow tax.
+     */
+    private static void serveExclusive(TrafficLight serve, TrafficLight other) {
         if (serve.color() == LightColor.GREEN) {
             serve.holdGreen();
-            stop.forceRed();
+        } else {
+            serve.forceGreen();
+        }
+        if (other.color() == LightColor.GREEN) {
+            other.holdGreen();
+        } else {
+            other.forceGreen();
+        }
+    }
+
+    /**
+     * Dual-demand handoff. Yellow only if the vacated approach still has cars on it;
+     * otherwise cut immediately (same safety model as {@link #servePriorityCut}).
+     */
+    private static void handoff(TrafficLight from, TrafficLight to, TrafficState traffic) {
+        if (approachClear(from, traffic)) {
+            from.forceRed();
+            to.forceGreen();
             return;
         }
-        if (stop.color() == LightColor.GREEN) {
-            stop.beginYellow();
-            return;
+        from.beginYellow();
+        to.forceRed();
+    }
+
+    /** True when every controlled edge has zero occupancy (or traffic unknown → treat as clear). */
+    private static boolean approachClear(TrafficLight light, TrafficState traffic) {
+        if (traffic == null) {
+            return true;
         }
-        serve.forceGreen();
-        stop.forceRed();
+        for (EdgeId edgeId : light.controlledEdges()) {
+            if (traffic.occupancy(edgeId) > 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static void grantAfterClearance(TrafficLight cleared, TrafficLight other, int dCleared, int dOther) {
+        if (dCleared == 0 && dOther == 0) {
+            keepAllClear(cleared, other);
+            return;
+        }
+        if (dOther > 0 && dCleared == 0) {
+            serveExclusive(other, cleared);
+            return;
+        }
+        if (dCleared > 0 && dOther == 0) {
+            serveExclusive(cleared, other);
+            return;
+        }
         if (dOther > 0 && dOther >= dCleared) {
             other.forceGreen();
             cleared.forceRed();
@@ -428,8 +472,7 @@ public final class SignalNetwork {
             other.forceGreen();
             cleared.forceRed();
         } else {
-            cleared.forceGreen();
-            other.forceRed();
+            keepAllClear(cleared, other);
         }
     }
 }

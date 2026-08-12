@@ -6,10 +6,12 @@ import com.traffic.api.dto.NodeDto;
 import com.traffic.api.dto.SessionSnapshotDto;
 import com.traffic.api.dto.VehicleDto;
 import com.traffic.model.graph.Edge;
+import com.traffic.model.graph.EdgeId;
 import com.traffic.model.graph.Node;
 import com.traffic.model.graph.NodeId;
 import com.traffic.model.graph.RoadGraph;
 import com.traffic.model.graph.RoadType;
+import com.traffic.model.priority.CorridorBoard;
 import com.traffic.model.signal.LightColor;
 import com.traffic.model.traffic.Accident;
 import com.traffic.model.vehicle.Vehicle;
@@ -24,6 +26,7 @@ import com.traffic.sim.CitySession;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 final class SnapshotMapper {
 
@@ -31,6 +34,11 @@ final class SnapshotMapper {
     }
 
     static SessionSnapshotDto from(CitySession session) {
+        CorridorBoard corridors = session.corridors();
+        corridors.setCurrentTick(session.worldTick());
+        Set<EdgeId> hard = corridors.activeHardEdges();
+        Set<EdgeId> soft = corridors.activeSoftEdges();
+
         List<NodeDto> nodes = new ArrayList<>();
         for (Node node : session.city().nodes()) {
             nodes.add(new NodeDto(node.id().value(), node.label(), node.x(), node.y(), node.facility().name()));
@@ -38,12 +46,23 @@ final class SnapshotMapper {
         nodes.sort(Comparator.comparingInt(NodeDto::id));
 
         List<EdgeDto> edges = new ArrayList<>();
+        int jammedCount = 0;
         for (Edge edge : session.city().edges()) {
             String light = session.simulation().signals().colorOf(edge.id())
                     .map(LightColor::name)
                     .orElse(null);
             int occ = session.traffic().occupancy(edge.id());
             RoadType type = RoadType.classify(edge.baseWeight(), edge.capacity());
+            boolean jammed = occ >= Math.max(1, (int) Math.ceil(edge.capacity() * 0.85));
+            if (jammed) {
+                jammedCount++;
+            }
+            String corridorStatus = "CLEAR";
+            if (hard.contains(edge.id())) {
+                corridorStatus = "LOCKED";
+            } else if (soft.contains(edge.id())) {
+                corridorStatus = "DISCOURAGED";
+            }
             edges.add(new EdgeDto(
                     edge.id().value(),
                     edge.from().value(),
@@ -52,7 +71,9 @@ final class SnapshotMapper {
                     edge.capacity(),
                     occ,
                     type.name(),
-                    light
+                    light,
+                    corridorStatus,
+                    jammed
             ));
         }
         edges.sort(Comparator.comparingInt(EdgeDto::id));
@@ -87,6 +108,8 @@ final class SnapshotMapper {
                 session.arrivedCount(),
                 session.fleet().size(),
                 session.controlPolicy().name(),
+                corridors.hasActive(),
+                jammedCount,
                 nodes,
                 edges,
                 vehicles,
@@ -133,6 +156,14 @@ final class SnapshotMapper {
                     .orElse(null);
         }
 
+        List<Integer> remaining = new ArrayList<>();
+        if (edgeId != null) {
+            remaining.add(edgeId);
+        }
+        for (EdgeId id : vehicle.remainingEdgesView()) {
+            remaining.add(id.value());
+        }
+
         return new VehicleDto(
                 vehicle.id().value(),
                 vehicle.name(),
@@ -154,7 +185,8 @@ final class SnapshotMapper {
                 remainingShortest,
                 remainingLive,
                 vehicle.serviceClass().name(),
-                vehicle.scheduledDepartAtTick()
+                vehicle.scheduledDepartAtTick(),
+                List.copyOf(remaining)
         );
     }
 }

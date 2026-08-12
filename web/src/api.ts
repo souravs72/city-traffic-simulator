@@ -23,7 +23,7 @@ export async function createSession(body?: {
   replaceSaved?: boolean;
 }): Promise<SessionSnapshot> {
   const payload = {
-    preset: body?.preset ?? "BLANK",
+    preset: body?.preset ?? "PLAYGROUND",
     seed: body?.seed ?? 42,
     maxTicks: body?.maxTicks ?? 300,
     fleetSize: body?.fleetSize ?? 0,

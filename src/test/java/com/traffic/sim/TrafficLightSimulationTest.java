@@ -65,7 +65,7 @@ class TrafficLightSimulationTest {
     }
 
     @Test
-    void yellowStillBlocksDuringPairClearance() {
+    void emptyYellowClearsImmediatelyForOneSidedDemand() {
         NodeId a = new NodeId(0);
         NodeId b = new NodeId(1);
         NodeId c = new NodeId(2);
@@ -79,6 +79,7 @@ class TrafficLightSimulationTest {
                 .addEdge(ew, a, c, 2, 1)
                 .build();
 
+        // Mid-yellow with nothing on the road — skip clearance delay.
         TrafficLight nsLight = new TrafficLight("NS", Set.of(ns), 2, 3, 2, LightColor.YELLOW);
         TrafficLight ewLight = new TrafficLight("EW", Set.of(ew), 2, 3, 2, LightColor.RED);
         SignalNetwork signals = new SignalNetwork(
@@ -96,9 +97,9 @@ class TrafficLightSimulationTest {
                 10
         );
         sim.step();
-        // Still clearing yellow — no new entry on NS this tick.
-        assertTrue(waiter.position() instanceof VehiclePosition.AtNode);
-        assertFalse(sim.signals().isOpen(ns));
+        assertEquals(LightColor.GREEN, nsLight.color());
+        assertTrue(waiter.position() instanceof VehiclePosition.OnEdge);
+        assertTrue(sim.signals().isOpen(ns));
     }
 
     @Test

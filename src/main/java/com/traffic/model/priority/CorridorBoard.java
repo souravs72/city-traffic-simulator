@@ -131,8 +131,37 @@ public final class CorridorBoard {
         return Set.copyOf(blocked);
     }
 
+    /** True if any corridor is armed (scheduled or live) and not yet expired. */
     public synchronized boolean hasActive() {
-        return !corridors.isEmpty();
+        return corridors.stream().anyMatch(c -> currentTick <= c.endTick());
+    }
+
+    /** True if a corridor is inside its live window right now. */
+    public synchronized boolean isLive() {
+        return corridors.stream().anyMatch(c -> c.activeAt(currentTick));
+    }
+
+    /** Hard locks visible in UI: live now, or armed and not expired (preview before VIP departs). */
+    public synchronized Set<EdgeId> activeHardEdges() {
+        Set<EdgeId> hard = new HashSet<>();
+        for (Corridor c : corridors) {
+            if (currentTick <= c.endTick()) {
+                hard.addAll(c.edges());
+            }
+        }
+        return Set.copyOf(hard);
+    }
+
+    public synchronized Set<EdgeId> activeSoftEdges() {
+        Set<EdgeId> soft = new HashSet<>();
+        Set<EdgeId> hard = activeHardEdges();
+        for (Corridor c : corridors) {
+            if (currentTick <= c.endTick()) {
+                soft.addAll(c.softEdges());
+            }
+        }
+        soft.removeAll(hard);
+        return Set.copyOf(soft);
     }
 
     /** True if any remaining edge on a path is hard-blocked for this class. */

@@ -1,5 +1,7 @@
 package com.traffic.api.dto;
 
+import java.util.List;
+
 public record VehicleDto(
         int id,
         String name,
@@ -21,6 +23,7 @@ public record VehicleDto(
         Integer remainingShortestEta,
         Integer remainingLiveEta,
         String serviceClass,
-        int scheduledDepartAtTick
+        int scheduledDepartAtTick,
+        List<Integer> remainingEdgeIds
 ) {
 }

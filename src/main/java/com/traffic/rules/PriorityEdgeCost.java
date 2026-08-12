@@ -64,7 +64,10 @@ public final class PriorityEdgeCost implements EdgeCost {
         int occ = traffic.occupancy(edge.id());
         int penalty = penaltyPerCar;
         if (honorPriority && traveler.isEmergency()) {
-            penalty = Math.max(0, penaltyPerCar / 2);
+            // Strong preference for clear emergency paths — still sensitive to total gridlock.
+            penalty = traveler.rank() >= ServiceClass.AMBULANCE.rank()
+                    ? Math.max(0, penaltyPerCar / 4)
+                    : Math.max(0, penaltyPerCar / 2);
         }
         int base = edge.baseWeight();
         if (honorPriority) {

@@ -12,6 +12,8 @@ export type ServiceClass = "CIVILIAN" | "VIP" | "POLICE" | "AMBULANCE" | "FIRE";
 
 export type ControlPolicy = "CITY_FLOW" | "MAPS_LIKE";
 
+export type CorridorStatus = "CLEAR" | "LOCKED" | "DISCOURAGED";
+
 export type NodeDto = {
   id: number;
   label: string;
@@ -29,6 +31,8 @@ export type EdgeDto = {
   occupancy: number;
   roadType: RoadType | string;
   lightColor: "GREEN" | "YELLOW" | "RED" | null;
+  corridorStatus?: CorridorStatus | string | null;
+  jammed?: boolean;
 };
 
 export type VehicleDto = {
@@ -53,6 +57,7 @@ export type VehicleDto = {
   remainingLiveEta: number | null;
   serviceClass?: ServiceClass | string | null;
   scheduledDepartAtTick?: number;
+  remainingEdgeIds?: number[];
 };
 
 export type AccidentDto = {
@@ -72,6 +77,8 @@ export type SessionSnapshot = {
   arrivedCount: number;
   fleetSize: number;
   controlPolicy?: ControlPolicy | string;
+  corridorActive?: boolean;
+  jammedEdgeCount?: number;
   nodes: NodeDto[];
   edges: EdgeDto[];
   vehicles: VehicleDto[];
