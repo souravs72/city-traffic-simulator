@@ -220,7 +220,7 @@ public final class Simulation {
                     && corridors.blocks(next, vehicle.serviceClass())) {
                 continue;
             }
-            if (signals.isOpen(next) && traffic.tryEnter(next)) {
+            if (signalAllows(vehicle, next) && traffic.tryEnter(next)) {
                 Edge edge = traffic.graph().requireEdge(next);
                 vehicle.enterEdge(next, edge.baseWeight());
                 waitTicksByVehicle.remove(vehicle.id());
@@ -319,7 +319,7 @@ public final class Simulation {
         return ages;
     }
 
-    /** Max service-class rank among ready waiters on each approach. */
+    /** Max VIP+/emergency rank among ready waiters on each approach. */
     private Map<EdgeId, Integer> priorityByEdge() {
         Map<EdgeId, Integer> pri = new HashMap<>();
         for (Vehicle vehicle : vehicles) {
@@ -330,13 +330,24 @@ public final class Simulation {
                 continue;
             }
             ServiceClass sc = vehicle.serviceClass();
-            if (!sc.preemptsSignals()) {
+            if (!sc.getsSignalPrivilege()) {
                 continue;
             }
             vehicle.peekNextEdge().ifPresent(edgeId ->
                     pri.merge(edgeId, sc.rank(), Math::max));
         }
         return pri;
+    }
+
+    /**
+     * Civilians obey lights. VIP/emergency only stop when a higher-rank unit needs
+     * the conflicting approach — otherwise they cut through.
+     */
+    private boolean signalAllows(Vehicle vehicle, EdgeId next) {
+        if (!policy.honorPriority()) {
+            return signals.isOpen(next);
+        }
+        return signals.allowsEntry(next, vehicle.serviceClass().rank());
     }
 
     private boolean needsReplan(Vehicle vehicle) {

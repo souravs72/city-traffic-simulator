@@ -32,9 +32,17 @@ public enum ServiceClass {
         return rank > other.rank;
     }
 
-    /** Signal preemption is reserved for the three emergency arms. */
+    /** Classic emergency arms (fire/ambulance/police). */
     public boolean preemptsSignals() {
         return emergency;
+    }
+
+    /**
+     * VIP + emergency get signal privilege: they only stop when a higher-rank
+     * unit needs the conflicting approach.
+     */
+    public boolean getsSignalPrivilege() {
+        return rank >= VIP.rank;
     }
 
     public static ServiceClass parse(String raw) {

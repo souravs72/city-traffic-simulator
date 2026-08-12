@@ -43,6 +43,8 @@ public final class SignalNetwork {
     private final List<Pair> pairs;
     private final Map<EdgeId, TrafficLight> byEdge;
     private final ControlMode mode;
+    /** Last privileged ranks seen on approaches (VIP+). */
+    private Map<EdgeId, Integer> lastPriorityByEdge = Map.of();
 
     public SignalNetwork(List<TrafficLight> lights) {
         this(lights, List.of(), ControlMode.FLOW_GUARD);
@@ -130,25 +132,26 @@ public final class SignalNetwork {
         Objects.requireNonNull(traffic, "traffic");
         Map<EdgeId, Integer> waiting = waitingByEdge == null ? Map.of() : waitingByEdge;
         Map<EdgeId, Integer> ages = waitAgeByEdge == null ? Map.of() : waitAgeByEdge;
-        Map<EdgeId, Integer> pri = priorityByEdge == null ? Map.of() : priorityByEdge;
+        Map<EdgeId, Integer> pri = priorityByEdge == null ? Map.of() : Map.copyOf(priorityByEdge);
+        this.lastPriorityByEdge = pri;
         Set<TrafficLight> paired = new HashSet<>();
         for (Pair pair : pairs) {
             int pa = maxPriority(pair.a(), pri);
             int pb = maxPriority(pair.b(), pri);
-            // Emergency preemption: highest emergency approach wins the junction outright.
-            if (pa >= 2 || pb >= 2) { // POLICE rank=2 is lowest emergency
+            // VIP+ privilege: hard-cut green unless a higher-rank unit needs the other approach.
+            // Equal ranks: brief arbitration by pressure (stopping then benefits the system).
+            if (pa >= 1 || pb >= 1) {
                 if (pa > pb) {
-                    serveExclusive(pair.a(), pair.b());
+                    servePriorityCut(pair.a(), pair.b());
                 } else if (pb > pa) {
-                    serveExclusive(pair.b(), pair.a());
+                    servePriorityCut(pair.b(), pair.a());
                 } else if (pa > 0) {
-                    // Tie: prefer FIRE>AMBULANCE>POLICE already encoded in rank; equal → pressure
                     int da = effectivePressure(pair.a(), traffic, waiting, ages);
                     int db = effectivePressure(pair.b(), traffic, waiting, ages);
                     if (da >= db) {
-                        serveExclusive(pair.a(), pair.b());
+                        servePriorityCut(pair.a(), pair.b());
                     } else {
-                        serveExclusive(pair.b(), pair.a());
+                        servePriorityCut(pair.b(), pair.a());
                     }
                 }
                 paired.add(pair.a());
@@ -166,6 +169,57 @@ public final class SignalNetwork {
                 light.forceGreen();
             }
         }
+    }
+
+    /**
+     * Hard cut for privileged traffic — skip yellow delay so emergency/VIP do not sit.
+     * Safe in this model because occupancy is on edges, not an intersection box.
+     */
+    private static void servePriorityCut(TrafficLight serve, TrafficLight stop) {
+        stop.forceRed();
+        if (serve.color() == LightColor.GREEN) {
+            serve.holdGreen();
+        } else {
+            serve.forceGreen();
+        }
+    }
+
+    /**
+     * Privileged entry check: VIP/emergency may proceed on red only when no higher-rank
+     * demand is waiting on a conflicting approach (i.e. stopping would not help the system).
+     */
+    public boolean allowsEntry(EdgeId edgeId, int travelerRank) {
+        Objects.requireNonNull(edgeId, "edgeId");
+        if (isOpen(edgeId)) {
+            return true;
+        }
+        if (mode == ControlMode.FIXED_CYCLE) {
+            return false;
+        }
+        if (travelerRank < 1) { // below VIP
+            return false;
+        }
+        TrafficLight mine = byEdge.get(edgeId);
+        if (mine == null) {
+            return true;
+        }
+        for (Pair pair : pairs) {
+            TrafficLight other = null;
+            if (pair.a() == mine) {
+                other = pair.b();
+            } else if (pair.b() == mine) {
+                other = pair.a();
+            }
+            if (other == null) {
+                continue;
+            }
+            int otherPri = maxPriority(other, lastPriorityByEdge);
+            // Cut through only when we strictly outrank opposing demand.
+            // Equal/higher opposing → obey the light (stopping helps the system).
+            return otherPri < travelerRank;
+        }
+        // Unpaired light: privileged traffic never waits.
+        return true;
     }
 
     private static int maxPriority(TrafficLight light, Map<EdgeId, Integer> priorityByEdge) {
