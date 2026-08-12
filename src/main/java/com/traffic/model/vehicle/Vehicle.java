@@ -106,6 +106,17 @@ public final class Vehicle {
         }
     }
 
+    /**
+     * Editor / apply-edits: yank a car off a road onto a node (caller updates occupancy).
+     */
+    public void snapToNode(NodeId node) {
+        Objects.requireNonNull(node, "node");
+        this.position = new VehiclePosition.AtNode(node);
+        if (node.equals(destination) && remainingEdges.isEmpty()) {
+            arrived = true;
+        }
+    }
+
     public void enterEdge(EdgeId edge, int travelTicks) {
         Objects.requireNonNull(edge, "edge");
         if (travelTicks <= 0) {

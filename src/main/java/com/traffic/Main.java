@@ -1,22 +1,15 @@
 package com.traffic;
 
+import com.traffic.config.CityGenConfig;
 import com.traffic.config.SimConfig;
-import com.traffic.model.traffic.Accident;
-import com.traffic.model.traffic.TrafficState;
+import com.traffic.model.graph.Node;
 import com.traffic.model.vehicle.Vehicle;
-import com.traffic.routing.EdgeCost;
-import com.traffic.routing.Routers;
 import com.traffic.rules.AccidentFlavor;
-import com.traffic.rules.DynamicEdgeCost;
-import com.traffic.rules.Replanner;
-import com.traffic.sim.DemoCity;
-import com.traffic.sim.FleetFactory;
-import com.traffic.sim.Simulation;
-
-import java.util.List;
+import com.traffic.sim.CitySession;
+import com.traffic.sim.SessionMode;
 
 /**
- * Playable multi-car demo: lights, ✕ accidents, congestion costs, and automatic replan.
+ * Grid-city demo: generate a downtown, doodle a shortcut in BUILD, then PLAY.
  */
 public final class Main {
 
@@ -24,62 +17,61 @@ public final class Main {
     }
 
     public static void main(String[] args) {
-        SimConfig config = SimConfig.defaults();
-        DemoCity city = new DemoCity();
-        TrafficState traffic = new TrafficState(city.graph);
-        EdgeCost cost = new DynamicEdgeCost(traffic, config.congestionPenaltyPerCar());
+        SimConfig config = new SimConfig(
+                300,
+                200,
+                com.traffic.routing.RoutingAlgorithm.DIJKSTRA,
+                com.traffic.model.signal.LightTiming.playful(),
+                2,
+                8,
+                true
+        );
+        CitySession session = CitySession.openGrid(
+                config,
+                CityGenConfig.downtown(),
+                12,
+                42L
+        );
 
-        Accident crash = traffic.reportAccident(
-                city.ac,
+        System.out.println("=== City Traffic Simulator — grid session ===");
+        System.out.println("mode=" + session.mode()
+                + " | nodes=" + session.city().nodeCount()
+                + " | edges=" + session.city().edgeCount()
+                + " | cars=" + session.fleet().size());
+
+        // BUILD: player draws a playful diagonal shortcut
+        Node corner = session.city().nodes().stream()
+                .filter(n -> n.label().equals("R0C0"))
+                .findFirst()
+                .orElseThrow();
+        Node far = session.city().nodes().stream()
+                .filter(n -> n.label().equals("R9C9"))
+                .findFirst()
+                .orElseThrow();
+        session.city().connectOneWay(corner.id(), far.id(), 4);
+        System.out.println("BUILD: drew shortcut " + corner.label() + " → " + far.label()
+                + " (unapplied=" + session.hasUnappliedEdits() + ")");
+
+        // Drop a ✕ on some busy-looking edge after we enter play (post-apply)
+        session.play();
+        System.out.println("PLAY: map version applied, mode=" + SessionMode.PLAY);
+
+        var anyEdge = session.traffic().graph().edges().iterator().next();
+        session.traffic().reportAccident(
+                anyEdge.id(),
                 config.accidentDurationTicks(),
                 AccidentFlavor.randomCaption()
         );
-
-        List<Vehicle> fleet = FleetFactory.spawn(
-                city,
-                config,
-                cost,
-                FleetFactory.defaultTrips(city)
-        );
-
-        Replanner replanner = new Replanner(
-                Routers.create(config.routingAlgorithm(), city.graph),
-                cost
-        );
-
-        Simulation sim = new Simulation(
-                traffic,
-                city.defaultSignals(config.lightTiming()),
-                fleet,
-                config.initialFuel(),
-                replanner
-        );
-
-        System.out.println("=== City Traffic Simulator — fleet demo ===");
-        System.out.println("cars=" + fleet.size()
-                + " | lights=" + config.lightTiming()
-                + " | router=" + config.routingAlgorithm());
-        System.out.println("✕ " + crash.caption()
-                + " on edge " + crash.edgeId().value()
-                + " (" + crash.ticksRemaining() + " ticks)");
+        System.out.println("✕ " + session.traffic().activeAccidents().get(0).caption()
+                + " on edge " + anyEdge.id().value());
         System.out.println();
 
-        int started = sim.tick();
-        while (sim.tick() - started < config.maxTicks() && !sim.allArrived()) {
-            sim.step();
-            if (config.verboseTickLog() && sim.tick() % 2 == 0) {
-                System.out.println("t=" + sim.tick()
-                        + " arrived=" + sim.arrivedCount() + "/" + fleet.size()
-                        + " replans=" + sim.totalReplans()
-                        + " ✕=" + traffic.activeAccidents().size());
-            }
-        }
-
+        int steps = session.run(config.maxTicks());
         System.out.println();
-        System.out.println("done: steps=" + (sim.tick() - started)
-                + " arrived=" + sim.arrivedCount() + "/" + fleet.size()
-                + " totalReplans=" + sim.totalReplans());
-        for (Vehicle car : fleet) {
+        System.out.println("done: steps=" + steps
+                + " arrived=" + session.arrivedCount() + "/" + session.fleet().size()
+                + " worldTick=" + session.worldTick());
+        for (Vehicle car : session.fleet()) {
             System.out.println("  car#" + car.id().value()
                     + " arrived=" + car.arrived()
                     + " replans=" + car.replanCount()
