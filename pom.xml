@@ -9,8 +9,8 @@
     <packaging>jar</packaging>
 
 
-    <name>city-traffic-simulator</name>
-    <description>Concurrent city traffic simulator for learning DSA and multithreading</description>
+    <name>CityFlow</name>
+    <description>Priority traffic sandbox — emergency/VIP corridor policy vs Maps-like routing on a concurrent city graph</description>
     <url>https://github.com/souravs72/city-traffic-simulator</url>
 
     

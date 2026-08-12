@@ -43,6 +43,14 @@ const SERVICE_CLASSES: { id: ServiceClass; label: string }[] = [
   { id: "FIRE", label: "Fire" },
 ];
 
+const SERVICE_SHORT: Record<ServiceClass, string> = {
+  CIVILIAN: "",
+  VIP: "VIP",
+  POLICE: "Police",
+  AMBULANCE: "Ambulance",
+  FIRE: "Fire",
+};
+
 export default function App() {
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -331,9 +339,9 @@ export default function App() {
     return (
       <div className="app">
         <div className="boot">
-          <p className="eyebrow">City Traffic</p>
-          <h1>Connecting…</h1>
-          <p className="mute">{error ?? "Starting Java session"}</p>
+          <p className="eyebrow">CityFlow</p>
+          <h1>Connecting</h1>
+          <p className="mute">{error ?? "Opening simulation session…"}</p>
           <button type="button" className="btn primary" onClick={() => void boot()} disabled={busy}>
             Retry
           </button>
@@ -347,19 +355,37 @@ export default function App() {
   const hasSelection = selectedNodeId != null || selectedEdgeId != null;
   const signalsVisible = clockRunning || showLights;
   const hasAnyLights = session.edges.some((e) => e.lightColor != null);
+  const policy = session.controlPolicy ?? "CITY_FLOW";
+  const policyLabel = policy === "MAPS_LIKE" ? "Maps-like" : "CityFlow";
 
   return (
     <div className={`app ${clockRunning ? "racing" : ""}`}>
       <header className="top">
         <div className="top-brand">
-          <h1>City Flow</h1>
+          <p className="eyebrow">Priority traffic sandbox</p>
+          <h1>CityFlow</h1>
         </div>
         <div className="top-meta">
-          <span className="chip">{session.nodeCount}n</span>
-          <span className="chip">{session.edgeCount}r</span>
-          <span className="chip">{session.fleetSize}c</span>
+          <span className={`chip policy ${policy === "CITY_FLOW" ? "cf" : "maps"}`}>
+            {policyLabel}
+          </span>
+          <span className="chip">
+            <em>{session.nodeCount}</em> nodes
+          </span>
+          <span className="chip">
+            <em>{session.edgeCount}</em> roads
+          </span>
+          <span className="chip">
+            <em>{session.fleetSize}</em> fleet
+          </span>
           <span className={`chip ${clockRunning ? "live" : ""}`}>
-            {clockRunning ? `t${session.worldTick}` : "build"}
+            {clockRunning ? (
+              <>
+                <em>t{session.worldTick}</em> live
+              </>
+            ) : (
+              "Build"
+            )}
           </span>
         </div>
       </header>
@@ -495,7 +521,7 @@ export default function App() {
                 disabled={busy || clockRunning || !hasSelection}
                 onClick={() => void deleteSelection()}
               >
-                Del
+                Delete
               </button>
               {!clockRunning ? (
                 <button
@@ -504,7 +530,7 @@ export default function App() {
                   disabled={busy || !canRace}
                   onClick={() => void startClock()}
                 >
-                  Race
+                  Run
                 </button>
               ) : (
                 <button type="button" className="btn" onClick={pauseClock}>
@@ -535,13 +561,13 @@ export default function App() {
 
           <div className="stage-foot">
             <div className="legend" aria-label="Legend">
-              <span><i className="swatch hwy" /> hwy</span>
-              <span><i className="swatch ave" /> ave</span>
-              <span><i className="swatch alley" /> alley</span>
-              <span><i className="swatch lock" /> lock</span>
-              <span><i className="swatch soft" /> soft</span>
+              <span><i className="swatch hwy" /> Highway</span>
+              <span><i className="swatch ave" /> Avenue</span>
+              <span><i className="swatch alley" /> Alley</span>
+              <span><i className="swatch lock" /> Corridor</span>
+              <span><i className="swatch soft" /> Soft buffer</span>
               {(session.jammedEdgeCount ?? 0) > 0 && (
-                <span className="mute">{session.jammedEdgeCount} jam</span>
+                <span className="mute jam-pill">{session.jammedEdgeCount} jammed</span>
               )}
             </div>
           </div>
@@ -569,41 +595,44 @@ export default function App() {
               disabled={busy || clockRunning}
               onClick={() => void startNewCity()}
             >
-              New
+              Blank map
             </button>
-            <div className="seg" style={{ marginTop: 8 }}>
+            <p className="rail-label">Control policy</p>
+            <div className="seg policy-seg">
               <button
                 type="button"
-                className={(session.controlPolicy ?? "CITY_FLOW") === "CITY_FLOW" ? "on" : ""}
+                className={policy === "CITY_FLOW" ? "on" : ""}
                 disabled={busy || clockRunning}
                 onClick={() => void run(() => api.setPolicy("CITY_FLOW"))}
               >
-                CityFlow
+                Priority
               </button>
               <button
                 type="button"
-                className={(session.controlPolicy ?? "CITY_FLOW") === "MAPS_LIKE" ? "on" : ""}
+                className={policy === "MAPS_LIKE" ? "on" : ""}
                 disabled={busy || clockRunning}
                 onClick={() => void run(() => api.setPolicy("MAPS_LIKE"))}
               >
-                Maps
+                Equal
               </button>
             </div>
           </div>
 
           <div className="card">
-            <h2>Ops</h2>
-            <div className="seg">
+            <h2>Dispatch</h2>
+            <div className="seg three">
               <button
                 type="button"
                 disabled={busy || clockRunning || dispatchScene == null}
+                title={dispatchScene == null ? "Select a scene node first" : undefined}
                 onClick={() => void run(() => api.dispatchEmergency("AMBULANCE", dispatchScene!))}
               >
-                Amb
+                Ambulance
               </button>
               <button
                 type="button"
                 disabled={busy || clockRunning || dispatchScene == null}
+                title={dispatchScene == null ? "Select a scene node first" : undefined}
                 onClick={() => void run(() => api.dispatchEmergency("FIRE", dispatchScene!))}
               >
                 Fire
@@ -611,6 +640,7 @@ export default function App() {
               <button
                 type="button"
                 disabled={busy || clockRunning || dispatchScene == null}
+                title={dispatchScene == null ? "Select a scene node first" : undefined}
                 onClick={() => void run(() => api.dispatchEmergency("POLICE", dispatchScene!))}
               >
                 Police
@@ -639,7 +669,7 @@ export default function App() {
                   );
                 }}
               >
-                VIP
+                VIP convoy
               </button>
               <button
                 type="button"
@@ -647,35 +677,44 @@ export default function App() {
                 disabled={busy || clockRunning}
                 onClick={() => void run(() => api.seedFacilities())}
               >
-                Seed
-              </button>
-              <button
-                type="button"
-                className="btn primary"
-                disabled={busy || clockRunning || session.fleetSize < 1}
-                onClick={() => {
-                  void (async () => {
-                    setBusy(true);
-                    try {
-                      setCompareResult(await api.comparePolicies(80));
-                      setError(null);
-                    } catch (e) {
-                      setError(e instanceof Error ? e.message : "Compare failed");
-                    } finally {
-                      setBusy(false);
-                    }
-                  })();
-                }}
-              >
-                Compare
+                Seed sites
               </button>
             </div>
+            <button
+              type="button"
+              className="btn primary compare-btn"
+              disabled={busy || clockRunning || session.fleetSize < 1}
+              onClick={() => {
+                void (async () => {
+                  setBusy(true);
+                  try {
+                    setCompareResult(await api.comparePolicies(80));
+                    setError(null);
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : "Compare failed");
+                  } finally {
+                    setBusy(false);
+                  }
+                })();
+              }}
+            >
+              Compare policies
+            </button>
             {compareResult && (
-              <p className="compare-line mono">
-                CF {compareResult.cityFlow.emergencyArrivalTicks}s / Maps{" "}
-                {compareResult.mapsLike.emergencyArrivalTicks}s ·{" "}
-                {compareResult.cityFlowWinsEmergency ? "CityFlow" : "Maps"}
-              </p>
+              <div className="compare-card">
+                <div className="compare-row">
+                  <span>Priority</span>
+                  <strong>{compareResult.cityFlow.emergencyArrivalTicks}s</strong>
+                </div>
+                <div className="compare-row">
+                  <span>Equal</span>
+                  <strong>{compareResult.mapsLike.emergencyArrivalTicks}s</strong>
+                </div>
+                <p className="compare-verdict">
+                  Faster emergency:{" "}
+                  <em>{compareResult.cityFlowWinsEmergency ? "Priority" : "Equal"}</em>
+                </p>
+              </div>
             )}
           </div>
 
@@ -696,15 +735,21 @@ export default function App() {
                     />
                     <strong>
                       {v.name}
-                      {v.serviceClass && v.serviceClass !== "CIVILIAN" ? ` · ${v.serviceClass[0]}` : ""}
+                      {(() => {
+                        const cls = v.serviceClass as ServiceClass | null | undefined;
+                        const tag = cls && SERVICE_SHORT[cls];
+                        return tag ? ` · ${tag}` : "";
+                      })()}
                     </strong>
                     <span className={`pill ${v.arrived ? "ok" : ""}`}>
-                      {v.arrived ? "ok" : clockRunning ? "…" : "·"}
+                      {v.arrived ? "Arrived" : clockRunning ? "En route" : "Queued"}
                     </span>
                   </div>
                   <div className="car-stats mono">
-                    <span>{v.plannedShortestTicks}→{v.plannedLiveTicks}s</span>
-                    {v.actualTicks != null && <span className="accent">{v.actualTicks}s</span>}
+                    <span>
+                      plan {v.plannedShortestTicks}→{v.plannedLiveTicks}s
+                    </span>
+                    {v.actualTicks != null && <span className="accent">actual {v.actualTicks}s</span>}
                   </div>
                 </li>
               ))}
