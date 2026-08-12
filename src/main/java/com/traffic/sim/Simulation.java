@@ -13,6 +13,8 @@ import com.traffic.model.vehicle.VehicleId;
 import com.traffic.model.vehicle.VehiclePosition;
 import com.traffic.routing.Path;
 import com.traffic.rules.Replanner;
+import com.traffic.sim.parallel.ParallelTickEngine;
+import com.traffic.sim.parallel.SimExecutor;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -28,8 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Tick loop for a fleet of cars.
- * CityFlow policy: priority departures, emergency signal preemption, corridor diversion.
- * Maps-like policy: congestion routing only — no priority privileges.
+ * Parallel tick: Phase A + stripe departures + dedicated routing pool.
  */
 public final class Simulation {
 
@@ -42,13 +43,16 @@ public final class Simulation {
     private final int expectedFuelLedger;
     private final boolean checkInvariants;
     private final int parallelRoutingThreshold;
+    private final boolean parallelTick;
+    private final SimExecutor executor;
+    private final boolean ownsExecutor;
     private int tick;
     private final AtomicInteger totalReplans = new AtomicInteger();
-    private final Map<VehicleId, Integer> waitTicksByVehicle = new HashMap<>();
+    private final Map<VehicleId, Integer> waitTicksByVehicle = new ConcurrentHashMap<>();
 
     public Simulation(TrafficState traffic, List<Vehicle> vehicles, int expectedFuelLedger) {
         this(traffic, SignalNetwork.none(), vehicles, expectedFuelLedger, null, true, 8,
-                new CorridorBoard(), ControlPolicy.CITY_FLOW);
+                new CorridorBoard(), ControlPolicy.CITY_FLOW, true, null);
     }
 
     public Simulation(
@@ -58,7 +62,7 @@ public final class Simulation {
             int expectedFuelLedger
     ) {
         this(traffic, signals, vehicles, expectedFuelLedger, null, true, 8,
-                new CorridorBoard(), ControlPolicy.CITY_FLOW);
+                new CorridorBoard(), ControlPolicy.CITY_FLOW, true, null);
     }
 
     public Simulation(
@@ -69,7 +73,7 @@ public final class Simulation {
             Replanner replanner
     ) {
         this(traffic, signals, vehicles, expectedFuelLedger, replanner, true, 8,
-                new CorridorBoard(), ControlPolicy.CITY_FLOW);
+                new CorridorBoard(), ControlPolicy.CITY_FLOW, true, null);
     }
 
     public Simulation(
@@ -81,7 +85,7 @@ public final class Simulation {
             boolean checkInvariants
     ) {
         this(traffic, signals, vehicles, expectedFuelLedger, replanner, checkInvariants, 8,
-                new CorridorBoard(), ControlPolicy.CITY_FLOW);
+                new CorridorBoard(), ControlPolicy.CITY_FLOW, true, null);
     }
 
     public Simulation(
@@ -94,7 +98,7 @@ public final class Simulation {
             int parallelRoutingThreshold
     ) {
         this(traffic, signals, vehicles, expectedFuelLedger, replanner, checkInvariants,
-                parallelRoutingThreshold, new CorridorBoard(), ControlPolicy.CITY_FLOW);
+                parallelRoutingThreshold, new CorridorBoard(), ControlPolicy.CITY_FLOW, true, null);
     }
 
     public Simulation(
@@ -108,6 +112,23 @@ public final class Simulation {
             CorridorBoard corridors,
             ControlPolicy policy
     ) {
+        this(traffic, signals, vehicles, expectedFuelLedger, replanner, checkInvariants,
+                parallelRoutingThreshold, corridors, policy, true, null);
+    }
+
+    public Simulation(
+            TrafficState traffic,
+            SignalNetwork signals,
+            List<Vehicle> vehicles,
+            int expectedFuelLedger,
+            Replanner replanner,
+            boolean checkInvariants,
+            int parallelRoutingThreshold,
+            CorridorBoard corridors,
+            ControlPolicy policy,
+            boolean parallelTick,
+            SimExecutor executor
+    ) {
         this.traffic = Objects.requireNonNull(traffic, "traffic");
         this.signals = Objects.requireNonNull(signals, "signals");
         this.vehicles = List.copyOf(Objects.requireNonNull(vehicles, "vehicles"));
@@ -120,6 +141,14 @@ public final class Simulation {
             throw new IllegalArgumentException("parallelRoutingThreshold must be >= 0");
         }
         this.parallelRoutingThreshold = parallelRoutingThreshold;
+        this.parallelTick = parallelTick;
+        if (executor == null) {
+            this.executor = SimExecutor.createDefault();
+            this.ownsExecutor = true;
+        } else {
+            this.executor = executor;
+            this.ownsExecutor = false;
+        }
         this.tick = 0;
         if (checkInvariants) {
             Invariants.checkAll(traffic, this.vehicles, expectedFuelLedger);
@@ -132,6 +161,14 @@ public final class Simulation {
 
     public int totalReplans() {
         return totalReplans.get();
+    }
+
+    public boolean parallelTick() {
+        return parallelTick;
+    }
+
+    public SimExecutor executor() {
+        return executor;
     }
 
     public List<Vehicle> vehicles() {
@@ -166,26 +203,28 @@ public final class Simulation {
     public void step() {
         corridors.setCurrentTick(tick);
 
-        // Phase A — finish / continue travel
-        for (Vehicle vehicle : vehicles) {
-            if (vehicle.arrived()) {
-                continue;
-            }
-            if (vehicle.position() instanceof VehiclePosition.OnEdge onEdge) {
-                boolean finished = vehicle.advanceOnEdge();
-                if (finished) {
-                    EdgeId edgeId = onEdge.edge();
-                    Edge edge = traffic.graph().requireEdge(edgeId);
-                    traffic.leave(edgeId);
-                    vehicle.finishEdgeAt(edge.to());
-                    if (vehicle.arrived()) {
-                        vehicle.noteArrival(tick + 1);
+        if (parallelTick) {
+            ParallelTickEngine.advanceOnEdges(executor, vehicles, traffic, tick + 1);
+        } else {
+            for (Vehicle vehicle : vehicles) {
+                if (vehicle.arrived()) {
+                    continue;
+                }
+                if (vehicle.position() instanceof VehiclePosition.OnEdge onEdge) {
+                    boolean finished = vehicle.advanceOnEdge();
+                    if (finished) {
+                        EdgeId edgeId = onEdge.edge();
+                        Edge edge = traffic.graph().requireEdge(edgeId);
+                        traffic.leave(edgeId);
+                        vehicle.finishEdgeAt(edge.to());
+                        if (vehicle.arrived()) {
+                            vehicle.noteArrival(tick + 1);
+                        }
                     }
                 }
             }
         }
 
-        // Phase B — queues, lights (with optional preemption), replan, priority departures
         List<Vehicle> atNodes = new ArrayList<>();
         for (Vehicle vehicle : vehicles) {
             if (!vehicle.arrived() && vehicle.position() instanceof VehiclePosition.AtNode) {
@@ -201,54 +240,52 @@ public final class Simulation {
 
         replanBlocked(atNodes);
 
-        List<Vehicle> departOrder = new ArrayList<>(atNodes);
-        if (policy.honorPriority()) {
-            departOrder.sort(Comparator
-                    .comparingInt((Vehicle v) -> v.serviceClass().rank()).reversed()
-                    .thenComparingInt(v -> -waitTicksByVehicle.getOrDefault(v.id(), 0)));
-        }
+        Map<EdgeId, Integer> highestWaitingRank = policy.honorPriority()
+                ? ParallelTickEngine.highestWaitingRanks(atNodes, tick)
+                : Map.of();
 
-        // Highest rank waiting to enter each edge — VIP/civilians hold so emergency gets the slot.
-        Map<EdgeId, Integer> highestWaitingRank = Map.of();
-        if (policy.honorPriority()) {
-            Map<EdgeId, Integer> ranks = new HashMap<>();
-            for (Vehicle vehicle : atNodes) {
+        if (parallelTick) {
+            ParallelTickEngine.departByStripe(
+                    executor,
+                    atNodes,
+                    traffic,
+                    corridors,
+                    policy,
+                    tick,
+                    waitTicksByVehicle,
+                    highestWaitingRank,
+                    this::signalAllows
+            );
+        } else {
+            List<Vehicle> departOrder = new ArrayList<>(atNodes);
+            if (policy.honorPriority()) {
+                departOrder.sort(Comparator
+                        .comparingInt((Vehicle v) -> v.serviceClass().rank()).reversed()
+                        .thenComparingInt(v -> -waitTicksByVehicle.getOrDefault(v.id(), 0))
+                        .thenComparingInt(v -> v.id().value()));
+            }
+            for (Vehicle vehicle : departOrder) {
                 if (!vehicle.mayDepartAt(tick) || !vehicle.hasRemainingEdges()) {
                     continue;
                 }
-                vehicle.peekNextEdge().ifPresent(edgeId ->
-                        ranks.merge(edgeId, vehicle.serviceClass().rank(), Math::max));
-            }
-            highestWaitingRank = ranks;
-        }
-
-        for (Vehicle vehicle : departOrder) {
-            if (!vehicle.mayDepartAt(tick)) {
-                continue;
-            }
-            if (!vehicle.hasRemainingEdges()) {
-                continue;
-            }
-            EdgeId next = vehicle.peekNextEdge().orElseThrow();
-            if (policy.honorPriority()
-                    && corridors.blocks(next, vehicle.serviceClass())) {
-                continue;
-            }
-            if (policy.honorPriority()) {
-                int heldFor = highestWaitingRank.getOrDefault(next, 0);
-                if (vehicle.serviceClass().rank() < heldFor) {
-                    // Fair ladder: yield this departure to FIRE/AMBULANCE/POLICE ahead of VIP/civilians.
+                EdgeId next = vehicle.peekNextEdge().orElseThrow();
+                if (policy.honorPriority() && corridors.blocks(next, vehicle.serviceClass())) {
                     continue;
                 }
-            }
-            if (signalAllows(vehicle, next) && traffic.tryEnter(next)) {
-                Edge edge = traffic.graph().requireEdge(next);
-                vehicle.enterEdge(next, edge.baseWeight());
-                waitTicksByVehicle.remove(vehicle.id());
+                if (policy.honorPriority()) {
+                    int heldFor = highestWaitingRank.getOrDefault(next, 0);
+                    if (vehicle.serviceClass().rank() < heldFor) {
+                        continue;
+                    }
+                }
+                if (signalAllows(vehicle, next) && traffic.tryEnter(next)) {
+                    Edge edge = traffic.graph().requireEdge(next);
+                    vehicle.enterEdge(next, edge.baseWeight());
+                    waitTicksByVehicle.remove(vehicle.id());
+                }
             }
         }
 
-        // Phase C — accident timers
         traffic.tickAccidents();
 
         tick++;
@@ -274,8 +311,8 @@ public final class Simulation {
 
         if (needReplan.size() >= parallelRoutingThreshold) {
             ConcurrentHashMap<VehicleId, Optional<Path>> computed = new ConcurrentHashMap<>();
-            needReplan.parallelStream().forEach(vehicle ->
-                    computed.put(vehicle.id(), planner.computePath(vehicle, traffic.graph())));
+            executor.runRouting(() -> needReplan.parallelStream().forEach(vehicle ->
+                    computed.put(vehicle.id(), planner.computePath(vehicle, traffic.graph()))));
             for (Vehicle vehicle : needReplan) {
                 Optional<Path> path = computed.getOrDefault(vehicle.id(), Optional.empty());
                 if (path.isPresent()) {
@@ -340,7 +377,6 @@ public final class Simulation {
         return ages;
     }
 
-    /** Max VIP+/emergency rank among ready waiters on each approach. */
     private Map<EdgeId, Integer> priorityByEdge() {
         Map<EdgeId, Integer> pri = new HashMap<>();
         for (Vehicle vehicle : vehicles) {
@@ -360,10 +396,6 @@ public final class Simulation {
         return pri;
     }
 
-    /**
-     * Civilians obey lights. VIP/emergency only stop when a higher-rank unit needs
-     * the conflicting approach — otherwise they cut through.
-     */
     private boolean signalAllows(Vehicle vehicle, EdgeId next) {
         if (!policy.honorPriority()) {
             return signals.isOpen(next);
@@ -382,7 +414,6 @@ public final class Simulation {
         if (!policy.honorPriority()) {
             return false;
         }
-        // Proactive diversion: any remaining hop on a hard corridor → replan now.
         return corridors.pathBlocked(vehicle.remainingEdgesView(), vehicle.serviceClass())
                 || corridors.blocks(next, vehicle.serviceClass());
     }
@@ -400,5 +431,11 @@ public final class Simulation {
 
     public long arrivedCount() {
         return vehicles.stream().filter(Vehicle::arrived).count();
+    }
+
+    public void close() {
+        if (ownsExecutor) {
+            executor.close();
+        }
     }
 }

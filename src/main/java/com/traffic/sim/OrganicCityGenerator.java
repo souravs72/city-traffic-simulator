@@ -34,7 +34,15 @@ public final class OrganicCityGenerator {
     private OrganicCityGenerator() {
     }
 
+    public static EditableCity generateKolkata(long seed) {
+        return generate(seed ^ 0x4B4F4C4BL, true);
+    }
+
     public static EditableCity generate(long seed) {
+        return generate(seed, false);
+    }
+
+    private static EditableCity generate(long seed, boolean kolkata) {
         Random rng = new Random(seed);
         EditableCity city = new EditableCity();
         List<Node> nodes = new ArrayList<>();
@@ -72,7 +80,7 @@ public final class OrganicCityGenerator {
                 if (rng.nextDouble() < drop) {
                     continue;
                 }
-                String label = districtLabel(d, r, c);
+                String label = districtLabel(d, r, c, kolkata);
                 Node node = city.addIntersection(x, y, label);
                 nodes.add(node);
                 cellIndex.put(pack(r, c), node);
@@ -152,7 +160,18 @@ public final class OrganicCityGenerator {
         return District.OLD_TOWN;
     }
 
-    private static String districtLabel(District d, int r, int c) {
+    private static String districtLabel(District d, int r, int c, boolean kolkata) {
+        if (kolkata) {
+            String prefix = switch (d) {
+                case CBD -> "Dalhousie";
+                case OLD_TOWN -> "Burrabazar";
+                case PORT -> "Strand";
+                case INDUSTRIAL -> "Howrah";
+                case SUBURB -> "SaltLake";
+                case RIVERSIDE -> "Hooghly";
+            };
+            return prefix + "-" + r + "-" + c;
+        }
         String prefix = switch (d) {
             case CBD -> "CBD";
             case OLD_TOWN -> "Bazaar";

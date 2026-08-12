@@ -62,3 +62,63 @@ npm run dev
 ```
 
 Open the Vite URL. `/api` is proxied to `localhost:8080`.
+
+## Production-ish demo (optional)
+
+Env knobs (see `.env.example`):
+
+| Variable | Purpose |
+|----------|---------|
+| `CITYFLOW_PORT` / `PORT` | Listen port (default `8080`) |
+| `CITYFLOW_DATA_DIR` | Save directory (default `data/`) |
+| `CITYFLOW_CORS_ORIGINS` | Comma-separated allowed browser origins |
+| `CITYFLOW_API_KEY` | Require `X-Api-Key` on session/API routes (empty = open lab) |
+| `CITYFLOW_STATIC_DIR` | Serve a Vite `dist/` from the API process |
+| `CITYFLOW_MAX_*` | Body / run ticks / grid / fleet clamps |
+
+UI: set matching `VITE_API_KEY` in `web/.env` when the API key is enabled.
+
+**One-process Docker**
+
+```bash
+docker build -t city-flow .
+docker run --rm -p 8080:8080 -e CITYFLOW_API_KEY=changeme -v cityflow-data:/app/data city-flow
+```
+
+Or locally after `cd web && npm run build`:
+
+```bash
+CITYFLOW_STATIC_DIR=web/dist mvn -q -DskipTests package
+java -jar target/city-traffic-simulator-0.1.0-SNAPSHOT.jar
+```
+
+Health: `GET /api/health` (public) returns uptime, session presence, and auth mode.
+This remains a **single-operator** lab — not multi-tenant.
+
+
+## Why CityFlow (best use case)
+
+**CityFlow prioritizes life over VIP over commute.** Use it to rehearse emergency / VIP corridor
+policy against a Maps-like baseline before real signal changes.
+
+| Audience | Fit |
+|----------|-----|
+| Municipal / ops what-if | Accident, rush hour, ambulance vs VIP lockdown |
+| DSA / concurrency portfolio | Parallel tick, lock striping, dedicated pools, A* |
+| Teaching lab | Playground → Downtown → Megacity / Kolkata |
+
+### Parallel engine
+
+- Phase A (cars on edges) and stripe-grouped departures run on a dedicated tick pool
+- Path replans use a dedicated routing pool (not the JVM common pool)
+- `CorridorBoard` reads are lock-free snapshots
+- Multi-session via `X-Session-Id` (each browser tab gets its own city)
+
+### Presets
+
+Playground, Downtown, Megacity, **Kolkata** (stylized districts: Dalhousie, Strand, Howrah, Salt Lake, Hooghly).
+
+```bash
+curl -s http://localhost:8080/api/health
+curl -s -H 'X-Session-Id: demo-a' -X POST http://localhost:8080/api/session/new
+```

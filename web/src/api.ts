@@ -1,5 +1,31 @@
 import type { CityPreset, SessionSnapshot } from "./types";
 
+/** Callers: App.tsx and map tools. Adds optional VITE_API_KEY as X-Api-Key. */
+const API_KEY = (import.meta.env.VITE_API_KEY as string | undefined)?.trim();
+
+const SESSION_KEY = "cityflow.sessionId";
+
+export function getSessionId(): string {
+  let id = sessionStorage.getItem(SESSION_KEY);
+  if (!id) {
+    id = "web-" + Math.random().toString(36).slice(2, 10);
+    sessionStorage.setItem(SESSION_KEY, id);
+  }
+  return id;
+}
+
+function apiHeaders(json = false): HeadersInit {
+  const headers: Record<string, string> = {};
+  if (json) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (API_KEY) {
+    headers["X-Api-Key"] = API_KEY;
+  }
+  headers["X-Session-Id"] = getSessionId();
+  return headers;
+}
+
 async function parse<T>(res: Response): Promise<T> {
   const data = await res.json();
   if (!res.ok) {
@@ -8,8 +34,19 @@ async function parse<T>(res: Response): Promise<T> {
   return data as T;
 }
 
+async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  const base = apiHeaders(false);
+  for (const [k, v] of Object.entries(base)) {
+    if (!headers.has(k)) {
+      headers.set(k, v);
+    }
+  }
+  return parse(await fetch(path, { ...init, headers }));
+}
+
 export async function newCity(): Promise<SessionSnapshot> {
-  return parse(await fetch("/api/session/new", { method: "POST" }));
+  return apiFetch("/api/session/new", { method: "POST" });
 }
 
 export async function createSession(body?: {
@@ -33,42 +70,39 @@ export async function createSession(body?: {
     ...(body?.cols != null ? { cols: body.cols } : {}),
   };
 
-  const res = await fetch("/api/session", {
+  return apiFetch("/api/session", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders(true),
     body: JSON.stringify(payload),
   });
-  return parse(res);
 }
 
 export async function getSession(): Promise<SessionSnapshot> {
-  return parse(await fetch("/api/session"));
+  return apiFetch("/api/session");
 }
 
 export async function buildMode(): Promise<SessionSnapshot> {
-  return parse(await fetch("/api/session/build", { method: "POST" }));
+  return apiFetch("/api/session/build", { method: "POST" });
 }
 
 export async function playMode(): Promise<SessionSnapshot> {
-  return parse(await fetch("/api/session/play", { method: "POST" }));
+  return apiFetch("/api/session/play", { method: "POST" });
 }
 
 export async function applyEdits(): Promise<SessionSnapshot> {
-  return parse(await fetch("/api/session/apply", { method: "POST" }));
+  return apiFetch("/api/session/apply", { method: "POST" });
 }
 
 export async function stepTick(): Promise<SessionSnapshot> {
-  return parse(await fetch("/api/session/step", { method: "POST" }));
+  return apiFetch("/api/session/step", { method: "POST" });
 }
 
 export async function runTicks(ticks: number): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/session/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticks }),
-    }),
-  );
+  return apiFetch("/api/session/run", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({ ticks }),
+  });
 }
 
 export async function addNode(input: {
@@ -77,43 +111,35 @@ export async function addNode(input: {
   label?: string;
   facility?: string;
 }): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/city/nodes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-    }),
-  );
+  return apiFetch("/api/city/nodes", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify(input),
+  });
 }
 
 export async function setFacility(nodeId: number, facility: string): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/city/facility", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ nodeId, facility }),
-    }),
-  );
+  return apiFetch("/api/city/facility", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({ nodeId, facility }),
+  });
 }
 
 export async function setPolicy(policy: string): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/session/policy", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ policy }),
-    }),
-  );
+  return apiFetch("/api/session/policy", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({ policy }),
+  });
 }
 
 export async function deleteNode(id: number): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/city/nodes/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    }),
-  );
+  return apiFetch("/api/city/nodes/delete", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({ id }),
+  });
 }
 
 export async function connectEdge(input: {
@@ -123,29 +149,25 @@ export async function connectEdge(input: {
   twoWay?: boolean;
   roadType?: string;
 }): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/city/edges", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from: input.from,
-        to: input.to,
-        capacity: input.capacity ?? 0,
-        twoWay: input.twoWay ?? true,
-        roadType: input.roadType ?? "AVENUE",
-      }),
+  return apiFetch("/api/city/edges", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({
+      from: input.from,
+      to: input.to,
+      capacity: input.capacity ?? 0,
+      twoWay: input.twoWay ?? true,
+      roadType: input.roadType ?? "AVENUE",
     }),
-  );
+  });
 }
 
 export async function deleteEdge(id: number): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/city/edges/delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    }),
-  );
+  return apiFetch("/api/city/edges/delete", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({ id }),
+  });
 }
 
 export async function spawnAccident(input: {
@@ -153,13 +175,11 @@ export async function spawnAccident(input: {
   durationTicks?: number;
   caption?: string;
 }): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/accidents", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-    }),
-  );
+  return apiFetch("/api/accidents", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify(input),
+  });
 }
 
 export async function addTrip(
@@ -169,43 +189,37 @@ export async function addTrip(
   serviceClass = "CIVILIAN",
   scheduledDepartAtTick = 0,
 ): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/fleet/trips", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from,
-        to,
-        name: name && name.trim() ? name.trim() : null,
-        serviceClass,
-        scheduledDepartAtTick,
-      }),
+  return apiFetch("/api/fleet/trips", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({
+      from,
+      to,
+      name: name && name.trim() ? name.trim() : null,
+      serviceClass,
+      scheduledDepartAtTick,
     }),
-  );
+  });
 }
 
 export async function addRandomTrip(): Promise<SessionSnapshot> {
-  return parse(await fetch("/api/fleet/trips/random", { method: "POST" }));
+  return apiFetch("/api/fleet/trips/random", { method: "POST" });
 }
 
 export async function addRushHour(count = 8): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/fleet/rush", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ count }),
-    }),
-  );
+  return apiFetch("/api/fleet/rush", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({ count }),
+  });
 }
 
 export async function dispatchEmergency(serviceClass: string, sceneNodeId: number): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/fleet/dispatch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ serviceClass, sceneNodeId }),
-    }),
-  );
+  return apiFetch("/api/fleet/dispatch", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({ serviceClass, sceneNodeId }),
+  });
 }
 
 export async function vipConvoy(input: {
@@ -214,18 +228,16 @@ export async function vipConvoy(input: {
   departAtTick?: number;
   escorts?: number;
 }): Promise<SessionSnapshot> {
-  return parse(
-    await fetch("/api/fleet/vip-convoy", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from: input.from,
-        to: input.to,
-        departAtTick: input.departAtTick ?? 8,
-        escorts: input.escorts ?? 2,
-      }),
+  return apiFetch("/api/fleet/vip-convoy", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({
+      from: input.from,
+      to: input.to,
+      departAtTick: input.departAtTick ?? 8,
+      escorts: input.escorts ?? 2,
     }),
-  );
+  });
 }
 
 export type PolicyCompare = {
@@ -253,15 +265,13 @@ export type PolicyCompare = {
 };
 
 export async function comparePolicies(ticks = 80): Promise<PolicyCompare> {
-  return parse(
-    await fetch("/api/session/compare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticks }),
-    }),
-  );
+  return apiFetch("/api/session/compare", {
+    method: "POST",
+    headers: apiHeaders(true),
+    body: JSON.stringify({ ticks }),
+  });
 }
 
 export async function seedFacilities(): Promise<SessionSnapshot> {
-  return parse(await fetch("/api/city/facilities/seed", { method: "POST" }));
+  return apiFetch("/api/city/facilities/seed", { method: "POST" });
 }

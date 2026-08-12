@@ -12,7 +12,7 @@ import java.util.Objects;
  */
 public final class DynamicEdgeCost implements EdgeCost {
 
-    private static final int CLOSED_COST = 1_000_000;
+    private static final int CLOSED_COST = EdgeCost.CLOSED;
 
     private final TrafficState traffic;
     private final int penaltyPerCar;

@@ -6,39 +6,72 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.traffic.api.dto.AccidentRequest;
 import com.traffic.api.dto.AddNodeRequest;
+import com.traffic.api.dto.CompareRequest;
 import com.traffic.api.dto.ConnectEdgeRequest;
 import com.traffic.api.dto.CreateSessionRequest;
+import com.traffic.api.dto.DispatchRequest;
 import com.traffic.api.dto.FacilityRequest;
-import com.traffic.api.dto.PolicyRequest;
 import com.traffic.api.dto.IdRequest;
+import com.traffic.api.dto.PolicyRequest;
 import com.traffic.api.dto.RushRequest;
 import com.traffic.api.dto.TripRequest;
-import com.traffic.api.dto.DispatchRequest;
 import com.traffic.api.dto.VipConvoyRequest;
-import com.traffic.api.dto.CompareRequest;
+import com.traffic.persist.CityStore;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 
-/** Tiny JDK HTTP server exposing {@link SessionHub} to the React UI. */
+/**
+ * JDK HTTP server for {@link SessionHub}. Hardened for single-operator demos:
+ * CORS allowlist, optional API key, body/size/tick clamps, bounded workers,
+ * optional static UI from {@code CITYFLOW_STATIC_DIR}.
+ */
 public final class ApiServer {
 
-    private final int port;
-    private final SessionHub hub = new SessionHub();
+    private static final String API_KEY_HEADER = "X-Api-Key";
+    private static final String SESSION_HEADER = "X-Session-Id";
+
+    private final ApiConfig config;
+    private final SessionHub hub;
     private final ObjectMapper json = new ObjectMapper();
+    private final Instant startedAt = Instant.now();
+    private HttpServer server;
+    private ExecutorService workers;
 
     public ApiServer(int port) {
-        this.port = port;
+        this(ApiConfig.localLab(port, Path.of("data")));
+    }
+
+    public ApiServer(ApiConfig config) {
+        this(config, new SessionHub(new CityStore(config.savePath()), config));
+    }
+
+    public ApiServer(ApiConfig config, SessionHub hub) {
+        this.config = config;
+        this.hub = hub;
     }
 
     public void start() throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
-        server.createContext("/", this::root);
+        server = HttpServer.create(new InetSocketAddress(config.port()), 0);
         server.createContext("/api/health", this::health);
+        server.createContext("/api/metrics", this::metrics);
         server.createContext("/api/session", this::session);
         server.createContext("/api/session/new", ex -> mutate(ex, hub::newCity));
         server.createContext("/api/session/export", this::exportSession);
@@ -61,33 +94,148 @@ public final class ApiServer {
         server.createContext("/api/city/facilities/seed", this::seedFacilities);
         server.createContext("/api/fleet/trips/random", ex -> mutate(ex, hub::addRandomTrip));
         server.createContext("/api/fleet/rush", this::addRush);
-        server.setExecutor(Executors.newCachedThreadPool());
+        server.createContext("/", this::rootOrStatic);
+
+        workers = Executors.newFixedThreadPool(config.workerThreads(), namedDaemonFactory("api-worker"));
+        server.setExecutor(workers);
         server.start();
-        System.out.println("API listening on http://localhost:" + port);
-        System.out.println("React: cd web && npm run dev  (proxies /api)");
+
+        System.out.println("API listening on http://localhost:" + server.getAddress().getPort());
+        System.out.println("Config: " + config);
+        if (!config.authRequired()) {
+            System.out.println("WARN: CITYFLOW_API_KEY unset — open lab mode (do not expose publicly)");
+        }
+        if (config.staticDir().isPresent()) {
+            System.out.println("Serving UI from " + config.staticDir().get().toAbsolutePath());
+        } else {
+            System.out.println("React: cd web && npm run dev  (proxies /api)");
+        }
     }
 
-    private void root(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+    public void stop(int delaySeconds) {
+        if (server != null) {
+            server.stop(delaySeconds);
+        }
+        if (workers != null) {
+            workers.shutdownNow();
+        }
+    }
+
+    int port() {
+        return server != null ? server.getAddress().getPort() : config.port();
+    }
+
+    private void rootOrStatic(HttpExchange ex) throws IOException {
+        if (preflightOrReject(ex, false)) {
             return;
         }
-        // UI is Vite on :5173; this port is JSON API only.
-        writeJson(ex, 200, Map.of(
-                "service", "city-traffic-simulator-api",
-                "health", "/api/health",
-                "ui", "cd web && npm run dev → http://localhost:5173"
-        ));
+        String path = ex.getRequestURI().getPath();
+        if (path == null || path.isBlank() || "/".equals(path)) {
+            if (serveStatic(ex, "index.html")) {
+                return;
+            }
+            writeJson(ex, 200, Map.of(
+                    "service", "city-traffic-simulator-api",
+                    "health", "/api/health",
+                    "mode", "single-operator",
+                    "ui", config.staticDir().isPresent()
+                            ? "bundled at /"
+                            : "cd web && npm run dev → http://localhost:5173"
+            ));
+            return;
+        }
+        if (path.startsWith("/api/")) {
+            writeJson(ex, 404, Map.of("error", "Not found"));
+            return;
+        }
+        String relative = path.startsWith("/") ? path.substring(1) : path;
+        if (serveStatic(ex, relative) || serveStatic(ex, "index.html")) {
+            return;
+        }
+        writeJson(ex, 404, Map.of("error", "Not found"));
+    }
+
+    private boolean serveStatic(HttpExchange ex, String relative) throws IOException {
+        Optional<Path> rootOpt = config.staticDir();
+        if (rootOpt.isEmpty()) {
+            return false;
+        }
+        Path root = rootOpt.get().toAbsolutePath().normalize();
+        Path resolved = root.resolve(relative).normalize();
+        if (!resolved.startsWith(root) || !Files.isRegularFile(resolved)) {
+            return false;
+        }
+        byte[] bytes = Files.readAllBytes(resolved);
+        Headers h = ex.getResponseHeaders();
+        applyCors(ex, h);
+        h.set("Content-Type", contentType(resolved.getFileName().toString()));
+        h.set("Cache-Control", relative.equals("index.html") ? "no-cache" : "public, max-age=3600");
+        ex.sendResponseHeaders(200, bytes.length);
+        try (OutputStream out = ex.getResponseBody()) {
+            out.write(bytes);
+        }
+        return true;
+    }
+
+    private static String contentType(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".html")) {
+            return "text/html; charset=utf-8";
+        }
+        if (lower.endsWith(".js")) {
+            return "text/javascript; charset=utf-8";
+        }
+        if (lower.endsWith(".css")) {
+            return "text/css; charset=utf-8";
+        }
+        if (lower.endsWith(".svg")) {
+            return "image/svg+xml";
+        }
+        if (lower.endsWith(".png")) {
+            return "image/png";
+        }
+        if (lower.endsWith(".ico")) {
+            return "image/x-icon";
+        }
+        if (lower.endsWith(".json")) {
+            return "application/json";
+        }
+        if (lower.endsWith(".woff2")) {
+            return "font/woff2";
+        }
+        return "application/octet-stream";
+    }
+
+    private void metrics(HttpExchange ex) throws IOException {
+        if (preflightOrReject(ex, false)) {
+            return;
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.putAll(hub.healthDetails());
+        body.put("workerThreads", config.workerThreads());
+        body.put("maxRunTicks", config.maxRunTicks());
+        body.put("authRequired", config.authRequired());
+        writeJson(ex, 200, body);
     }
 
     private void health(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, false)) {
             return;
         }
-        writeJson(ex, 200, Map.of("ok", true));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("ok", true);
+        body.put("service", "city-traffic-simulator-api");
+        body.put("version", "0.1.0-SNAPSHOT");
+        body.put("mode", "single-operator");
+        body.put("uptimeMs", Duration.between(startedAt, Instant.now()).toMillis());
+        body.put("authRequired", config.authRequired());
+        body.put("schemaVersion", ApiConfig.SCHEMA_VERSION);
+        body.putAll(hub.healthDetails());
+        writeJson(ex, 200, body);
     }
 
     private void session(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
@@ -109,12 +257,12 @@ public final class ApiServer {
             }
             writeJson(ex, 405, Map.of("error", "Method not allowed"));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void exportSession(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
@@ -124,12 +272,12 @@ public final class ApiServer {
             }
             writeJson(ex, 200, hub.exportBlueprint());
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void run(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
@@ -140,132 +288,122 @@ public final class ApiServer {
             if (body != null && body.get("ticks") instanceof Number n) {
                 ticks = n.intValue();
             }
-            writeJson(ex, 200, hub.run(ticks));
+            writeJson(ex, 200, hub.run(config.clampRunTicks(ticks)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void connectEdge(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
-            ConnectEdgeRequest req = readJson(ex, ConnectEdgeRequest.class);
-            writeJson(ex, 200, hub.connect(req));
+            writeJson(ex, 200, hub.connect(readJson(ex, ConnectEdgeRequest.class)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
-
     private void setFacility(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
-            FacilityRequest req = readJson(ex, FacilityRequest.class);
-            writeJson(ex, 200, hub.setFacility(req));
+            writeJson(ex, 200, hub.setFacility(readJson(ex, FacilityRequest.class)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void setPolicy(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
-            PolicyRequest req = readJson(ex, PolicyRequest.class);
-            writeJson(ex, 200, hub.setPolicy(req));
+            writeJson(ex, 200, hub.setPolicy(readJson(ex, PolicyRequest.class)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void addNode(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
-            AddNodeRequest req = readJson(ex, AddNodeRequest.class);
-            writeJson(ex, 200, hub.addNode(req));
+            writeJson(ex, 200, hub.addNode(readJson(ex, AddNodeRequest.class)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void deleteNode(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
-            IdRequest req = readJson(ex, IdRequest.class);
-            writeJson(ex, 200, hub.removeNode(req));
+            writeJson(ex, 200, hub.removeNode(readJson(ex, IdRequest.class)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void deleteEdge(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
-            IdRequest req = readJson(ex, IdRequest.class);
-            writeJson(ex, 200, hub.removeEdge(req));
+            writeJson(ex, 200, hub.removeEdge(readJson(ex, IdRequest.class)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void accident(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
-            AccidentRequest req = readJson(ex, AccidentRequest.class);
-            writeJson(ex, 200, hub.accident(req));
+            writeJson(ex, 200, hub.accident(readJson(ex, AccidentRequest.class)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void dispatch(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
-            DispatchRequest req = readJson(ex, DispatchRequest.class);
-            writeJson(ex, 200, hub.dispatch(req));
+            writeJson(ex, 200, hub.dispatch(readJson(ex, DispatchRequest.class)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void vipConvoy(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
-            VipConvoyRequest req = readJson(ex, VipConvoyRequest.class);
-            writeJson(ex, 200, hub.vipConvoy(req));
+            writeJson(ex, 200, hub.vipConvoy(readJson(ex, VipConvoyRequest.class)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void compare(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
@@ -274,39 +412,39 @@ public final class ApiServer {
             if (req == null) {
                 req = new CompareRequest(80);
             }
-            writeJson(ex, 200, hub.compare(req));
+            int ticks = config.clampCompareTicks(req.ticks());
+            writeJson(ex, 200, hub.compare(new CompareRequest(ticks)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void seedFacilities(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
             writeJson(ex, 200, hub.seedFacilities());
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void addTrip(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
-            TripRequest req = readJson(ex, TripRequest.class);
-            writeJson(ex, 200, hub.addTrip(req));
+            writeJson(ex, 200, hub.addTrip(readJson(ex, TripRequest.class)));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void addRush(HttpExchange ex) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
@@ -320,21 +458,21 @@ public final class ApiServer {
             if (req == null) {
                 req = new RushRequest(8);
             }
-            writeJson(ex, 200, hub.addRushHour(req));
+            writeJson(ex, 200, hub.addRushHour(new RushRequest(config.clampRush(req.count()))));
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
     private void mutate(HttpExchange ex, SupplierWithException action) throws IOException {
-        if (corsPreflight(ex)) {
+        if (preflightOrReject(ex, true)) {
             return;
         }
         try {
             requirePost(ex);
             writeJson(ex, 200, action.get());
         } catch (Exception e) {
-            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+            writeError(ex, e);
         }
     }
 
@@ -344,38 +482,110 @@ public final class ApiServer {
         }
     }
 
-    private boolean corsPreflight(HttpExchange ex) throws IOException {
-        Headers h = ex.getResponseHeaders();
-        h.set("Access-Control-Allow-Origin", "*");
-        h.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-        h.set("Access-Control-Allow-Headers", "Content-Type");
+    private boolean preflightOrReject(HttpExchange ex, boolean requireAuth) throws IOException {
+        String origin = ex.getRequestHeaders().getFirst("Origin");
+        if (origin != null && !origin.isBlank() && !config.isOriginAllowed(origin)) {
+            writeJson(ex, 403, Map.of("error", "Origin not allowed"));
+            return true;
+        }
         if ("OPTIONS".equalsIgnoreCase(ex.getRequestMethod())) {
+            Headers h = ex.getResponseHeaders();
+            applyCors(ex, h);
+            h.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+            h.set("Access-Control-Allow-Headers", "Content-Type, " + API_KEY_HEADER + ", " + SESSION_HEADER);
+            h.set("Access-Control-Max-Age", "600");
             ex.sendResponseHeaders(204, -1);
             ex.close();
             return true;
         }
+        if (requireAuth && !authorize(ex)) {
+            writeJson(ex, 401, Map.of("error", "Unauthorized — set X-Api-Key"));
+            return true;
+        }
+        String sid = ex.getRequestHeaders().getFirst(SESSION_HEADER);
+        hub.bind(sid == null || sid.isBlank() ? SessionHub.DEFAULT_SESSION : sid);
         return false;
     }
 
-    private <T> T readJson(HttpExchange ex, Class<T> type) throws IOException {
-        try (InputStream in = ex.getRequestBody()) {
-            byte[] bytes = in.readAllBytes();
-            if (bytes.length == 0) {
-                return null;
-            }
-            return json.readValue(bytes, type);
+    private boolean authorize(HttpExchange ex) {
+        Optional<String> expected = config.apiKey();
+        if (expected.isEmpty()) {
+            return true;
         }
+        String provided = ex.getRequestHeaders().getFirst(API_KEY_HEADER);
+        if (provided == null) {
+            return false;
+        }
+        byte[] a = expected.get().getBytes(StandardCharsets.UTF_8);
+        byte[] b = provided.getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(a, b);
+    }
+
+    private void applyCors(HttpExchange ex, Headers h) {
+        String origin = ex.getRequestHeaders().getFirst("Origin");
+        if (origin != null && config.isOriginAllowed(origin)) {
+            h.set("Access-Control-Allow-Origin", origin);
+            h.set("Vary", "Origin");
+        }
+    }
+
+    private <T> T readJson(HttpExchange ex, Class<T> type) throws IOException {
+        byte[] bytes = readBodyLimited(ex);
+        if (bytes.length == 0) {
+            return null;
+        }
+        return json.readValue(bytes, type);
+    }
+
+    private byte[] readBodyLimited(HttpExchange ex) throws IOException {
+        if (ex.getRequestHeaders().containsKey("Content-Length")) {
+            long declared = Long.parseLong(ex.getRequestHeaders().getFirst("Content-Length"));
+            if (declared > config.maxBodyBytes()) {
+                throw new IllegalArgumentException(
+                        "Request body too large (max " + config.maxBodyBytes() + " bytes)");
+            }
+        }
+        try (InputStream in = ex.getRequestBody()) {
+            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int total = 0;
+            int n;
+            while ((n = in.read(chunk)) >= 0) {
+                total += n;
+                if (total > config.maxBodyBytes()) {
+                    throw new IllegalArgumentException(
+                            "Request body too large (max " + config.maxBodyBytes() + " bytes)");
+                }
+                buf.write(chunk, 0, n);
+            }
+            return buf.toByteArray();
+        }
+    }
+
+    private void writeError(HttpExchange ex, Exception e) throws IOException {
+        String msg = e.getMessage() == null ? "error" : e.getMessage();
+        int status = msg.toLowerCase(Locale.ROOT).contains("unauthorized") ? 401 : 400;
+        writeJson(ex, status, Map.of("error", msg));
     }
 
     private void writeJson(HttpExchange ex, int status, Object body) throws IOException {
         byte[] bytes = json.writeValueAsBytes(body);
         Headers h = ex.getResponseHeaders();
         h.set("Content-Type", "application/json; charset=utf-8");
-        h.set("Access-Control-Allow-Origin", "*");
+        applyCors(ex, h);
         ex.sendResponseHeaders(status, bytes.length);
         try (OutputStream out = ex.getResponseBody()) {
             out.write(bytes);
         }
+    }
+
+    private static ThreadFactory namedDaemonFactory(String prefix) {
+        AtomicInteger n = new AtomicInteger();
+        return r -> {
+            Thread t = new Thread(r, prefix + "-" + n.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        };
     }
 
     @FunctionalInterface

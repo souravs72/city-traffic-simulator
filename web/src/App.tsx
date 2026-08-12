@@ -11,13 +11,14 @@ const PRESETS: { id: CityPreset; label: string }[] = [
   { id: "PLAYGROUND", label: "Playground" },
   { id: "DOWNTOWN", label: "Downtown" },
   { id: "MEGACITY", label: "Megacity" },
+  { id: "KOLKATA", label: "Kolkata" },
 ];
 
-const TOOLS: { id: MapTool; label: string; hint: string }[] = [
-  { id: "NODE", label: "Node", hint: "Pick facility type, then click empty map" },
-  { id: "ROAD", label: "Road", hint: "Pick a road class, then click two nodes" },
-  { id: "TRIP", label: "Car", hint: "Pick service class, then click start → end" },
-  { id: "CRASH", label: "Crash", hint: "Click a road to close it — cars detour live" },
+const TOOLS: { id: MapTool; label: string }[] = [
+  { id: "NODE", label: "Node" },
+  { id: "ROAD", label: "Road" },
+  { id: "TRIP", label: "Car" },
+  { id: "CRASH", label: "Crash" },
 ];
 
 const ROAD_TYPES: { id: RoadType; label: string }[] = [
@@ -41,10 +42,6 @@ const SERVICE_CLASSES: { id: ServiceClass; label: string }[] = [
   { id: "AMBULANCE", label: "Ambulance" },
   { id: "FIRE", label: "Fire" },
 ];
-
-function nodeLabel(session: SessionSnapshot, id: number): string {
-  return session.nodes.find((n) => n.id === id)?.label ?? String(id);
-}
 
 export default function App() {
   const [session, setSession] = useState<SessionSnapshot | null>(null);
@@ -161,26 +158,43 @@ export default function App() {
 
   useEffect(() => {
     if (!clockRunning) return;
-    const id = window.setInterval(() => {
+
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled || document.visibilityState === "hidden") return;
       if (stepping.current) return;
       stepping.current = true;
       void api
         .stepTick()
         .then((s) => {
+          if (cancelled) return;
           applyTick(s);
           if (s.arrivedCount >= s.fleetSize && s.fleetSize > 0) {
             setClockRunning(false);
           }
         })
         .catch((e) => {
+          if (cancelled) return;
           setError(e instanceof Error ? e.message : "Clock step failed");
           setClockRunning(false);
         })
         .finally(() => {
           stepping.current = false;
         });
-    }, TICK_MS);
-    return () => window.clearInterval(id);
+    };
+
+    const id = window.setInterval(tick, TICK_MS);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        tick();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [clockRunning, applyTick]);
 
   async function deleteSelection() {
@@ -331,7 +345,6 @@ export default function App() {
   const fleet = [...session.vehicles].sort((a, b) => a.id - b.id);
   const canRace = session.fleetSize > 0 && session.edgeCount > 0;
   const hasSelection = selectedNodeId != null || selectedEdgeId != null;
-  const toolHint = TOOLS.find((t) => t.id === tool)?.hint ?? "";
   const signalsVisible = clockRunning || showLights;
   const hasAnyLights = session.edges.some((e) => e.lightColor != null);
 
@@ -339,15 +352,14 @@ export default function App() {
     <div className={`app ${clockRunning ? "racing" : ""}`}>
       <header className="top">
         <div className="top-brand">
-          <p className="eyebrow">Traffic lab</p>
           <h1>City Flow</h1>
         </div>
         <div className="top-meta">
-          <span className="chip">{session.nodeCount} nodes</span>
-          <span className="chip">{session.edgeCount} roads</span>
-          <span className="chip">{session.fleetSize} cars</span>
+          <span className="chip">{session.nodeCount}n</span>
+          <span className="chip">{session.edgeCount}r</span>
+          <span className="chip">{session.fleetSize}c</span>
           <span className={`chip ${clockRunning ? "live" : ""}`}>
-            {clockRunning ? `t ${session.worldTick}s` : "build"}
+            {clockRunning ? `t${session.worldTick}` : "build"}
           </span>
         </div>
       </header>
@@ -420,59 +432,43 @@ export default function App() {
                   </button>
                 ))}
                 {serviceClass === "VIP" && (
-                  <div className="vip-depart" role="group" aria-label="VIP departure tick">
-                    <span className="vip-depart-badge" aria-hidden>
-                      VIP
-                    </span>
-                    <div className="vip-depart-body">
-                      <span className="vip-depart-label">Depart</span>
-                      <div className="vip-depart-stepper">
-                        <button
-                          type="button"
-                          className="vip-depart-btn"
-                          disabled={busy || vipDepartTick <= 0}
-                          aria-label="Earlier departure"
-                          onClick={() => setVipDepartTick((t) => Math.max(0, t - 1))}
-                        >
-                          −
-                        </button>
-                        <label className="vip-depart-field">
-                          <span className="vip-depart-at">t</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={999}
-                            value={vipDepartTick}
-                            disabled={busy}
-                            onChange={(e) =>
-                              setVipDepartTick(Math.max(0, Number(e.target.value) || 0))
-                            }
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="vip-depart-btn"
+                  <div className="vip-depart" role="group" aria-label="VIP depart">
+                    <div className="vip-depart-stepper">
+                      <button
+                        type="button"
+                        className="vip-depart-btn"
+                        disabled={busy || vipDepartTick <= 0}
+                        aria-label="Earlier"
+                        onClick={() => setVipDepartTick((t) => Math.max(0, t - 1))}
+                      >
+                        −
+                      </button>
+                      <label className="vip-depart-field">
+                        <span className="vip-depart-at">@</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={999}
+                          value={vipDepartTick}
                           disabled={busy}
-                          aria-label="Later departure"
-                          onClick={() => setVipDepartTick((t) => t + 1)}
-                        >
-                          +
-                        </button>
-                      </div>
+                          onChange={(e) =>
+                            setVipDepartTick(Math.max(0, Number(e.target.value) || 0))
+                          }
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="vip-depart-btn"
+                        disabled={busy}
+                        aria-label="Later"
+                        onClick={() => setVipDepartTick((t) => t + 1)}
+                      >
+                        +
+                      </button>
                     </div>
-                    <span className="vip-depart-hint">locks corridor early</span>
                   </div>
                 )}
               </div>
-            )}
-            {!clockRunning && tool !== "TRIP" && tool !== "ROAD" && tool !== "NODE" && (
-              <p className="tool-hint">{toolHint}</p>
-            )}
-            {clockRunning && (
-              <p className="tool-hint live-hint">
-                Live · {(session.controlPolicy ?? "CITY_FLOW") === "MAPS_LIKE" ? "Maps-like" : "CityFlow"} ·
-                {" "}locks divert civilians · capacity jams force detours · cars ease between ticks
-              </p>
             )}
             <div className="tool-actions">
               <button
@@ -480,9 +476,8 @@ export default function App() {
                 className="btn ghost"
                 disabled={busy || clockRunning || session.edgeCount < 2}
                 onClick={() => void run(() => api.addRushHour(10))}
-                title="Spawn commute trips: rim → center"
               >
-                Rush hour
+                Rush
               </button>
               {hasAnyLights && (
                 <button
@@ -490,9 +485,8 @@ export default function App() {
                   className={`btn ghost ${signalsVisible ? "on" : ""}`}
                   disabled={busy}
                   onClick={() => setShowLights((v) => !v)}
-                  title={clockRunning ? "Lights stay on during the race" : "Show junction lights"}
                 >
-                  Lights {signalsVisible ? "on" : "off"}
+                  Lights
                 </button>
               )}
               <button
@@ -500,9 +494,8 @@ export default function App() {
                 className="btn danger"
                 disabled={busy || clockRunning || !hasSelection}
                 onClick={() => void deleteSelection()}
-                title="Delete selected (Delete / Backspace)"
               >
-                Delete
+                Del
               </button>
               {!clockRunning ? (
                 <button
@@ -511,7 +504,7 @@ export default function App() {
                   disabled={busy || !canRace}
                   onClick={() => void startClock()}
                 >
-                  Start race
+                  Race
                 </button>
               ) : (
                 <button type="button" className="btn" onClick={pauseClock}>
@@ -541,70 +534,22 @@ export default function App() {
           />
 
           <div className="stage-foot">
-            <div className="legend" aria-label="Map legend">
-              <span>
-                <i className="swatch hwy" /> highway
-              </span>
-              <span>
-                <i className="swatch ave" /> avenue
-              </span>
-              <span>
-                <i className="swatch alley" /> alley
-              </span>
-              <span>
-                <i className="mark car" /> cars
-              </span>
-              <span>
-                <i className="dot heat" /> jam heat
-              </span>
-              <span>
-                <i className="swatch lock" /> VIP/emergency lock
-              </span>
-              <span>
-                <i className="swatch soft" /> soft buffer
-              </span>
-              <span>
-                <i className="swatch detour" /> civilian detour
-              </span>
-              {signalsVisible && (
-                <>
-                  <span>
-                    <i className="mark signal go" /> go
-                  </span>
-                  <span>
-                    <i className="mark signal wait" /> stop
-                  </span>
-                </>
+            <div className="legend" aria-label="Legend">
+              <span><i className="swatch hwy" /> hwy</span>
+              <span><i className="swatch ave" /> ave</span>
+              <span><i className="swatch alley" /> alley</span>
+              <span><i className="swatch lock" /> lock</span>
+              <span><i className="swatch soft" /> soft</span>
+              {(session.jammedEdgeCount ?? 0) > 0 && (
+                <span className="mute">{session.jammedEdgeCount} jam</span>
               )}
             </div>
-            {(session.corridorActive || (session.jammedEdgeCount ?? 0) > 0) && (
-              <p className="tool-hint live-hint" style={{ marginTop: 6 }}>
-                {session.corridorActive
-                  ? "Purple LOCK = closed to civilians · teal dashed = open detours · jams auto-reroute via capacity"
-                  : `${session.jammedEdgeCount} jammed road(s) — cars replan around full capacity`}
-              </p>
-            )}
-            {hasSelection && (
-              <div className="selection-inline">
-                {selectedNodeId != null && (
-                  <span>
-                    Node <strong>{nodeLabel(session, selectedNodeId)}</strong>
-                  </span>
-                )}
-                {selectedEdgeId != null && (
-                  <span>
-                    Road <strong>#{selectedEdgeId}</strong>
-                  </span>
-                )}
-                <span className="mute">Delete to remove</span>
-              </div>
-            )}
           </div>
         </section>
 
         <aside className="rail">
           <div className="card">
-            <h2>Map</h2>
+            <h2>City</h2>
             <div className="seg">
               {PRESETS.map((p) => (
                 <button
@@ -624,16 +569,14 @@ export default function App() {
               disabled={busy || clockRunning}
               onClick={() => void startNewCity()}
             >
-              New city
+              New
             </button>
-            <p className="hint">Auto-saves until you confirm a preset replace. New city opens Playground.</p>
-            <div className="seg" style={{ marginTop: 10 }}>
+            <div className="seg" style={{ marginTop: 8 }}>
               <button
                 type="button"
                 className={(session.controlPolicy ?? "CITY_FLOW") === "CITY_FLOW" ? "on" : ""}
                 disabled={busy || clockRunning}
                 onClick={() => void run(() => api.setPolicy("CITY_FLOW"))}
-                title="FIRE > AMBULANCE > POLICE > VIP > civilian with corridors + preemption"
               >
                 CityFlow
               </button>
@@ -642,107 +585,104 @@ export default function App() {
                 className={(session.controlPolicy ?? "CITY_FLOW") === "MAPS_LIKE" ? "on" : ""}
                 disabled={busy || clockRunning}
                 onClick={() => void run(() => api.setPolicy("MAPS_LIKE"))}
-                title="Congestion routing only — no emergency privilege (Google-Maps-class)"
               >
-                Maps-like
+                Maps
               </button>
             </div>
-            <p className="hint">Compare CityFlow priority vs Maps-like equal routing.</p>
           </div>
 
-          <details className="card help">
-            <summary>How to play</summary>
-            <ol className="steps">
-              <li>Seed or mark hospitals / police / fire / VIP sites</li>
-              <li>Dispatch emergency units to a selected scene node</li>
-              <li>VIP convoy locks a corridor; civilians divert automatically</li>
-              <li>Run Maps vs CityFlow for a strict fairness report</li>
-            </ol>
-          </details>
-
-
           <div className="card">
-            <h2>Emergency ops</h2>
-            <p className="hint">Select a scene node, then dispatch. Seed facilities if the map has none.</p>
+            <h2>Ops</h2>
             <div className="seg">
-              <button type="button" disabled={busy || clockRunning || dispatchScene == null}
-                onClick={() => void run(() => api.dispatchEmergency("AMBULANCE", dispatchScene!))}>Ambulance</button>
-              <button type="button" disabled={busy || clockRunning || dispatchScene == null}
-                onClick={() => void run(() => api.dispatchEmergency("FIRE", dispatchScene!))}>Fire</button>
-              <button type="button" disabled={busy || clockRunning || dispatchScene == null}
-                onClick={() => void run(() => api.dispatchEmergency("POLICE", dispatchScene!))}>Police</button>
+              <button
+                type="button"
+                disabled={busy || clockRunning || dispatchScene == null}
+                onClick={() => void run(() => api.dispatchEmergency("AMBULANCE", dispatchScene!))}
+              >
+                Amb
+              </button>
+              <button
+                type="button"
+                disabled={busy || clockRunning || dispatchScene == null}
+                onClick={() => void run(() => api.dispatchEmergency("FIRE", dispatchScene!))}
+              >
+                Fire
+              </button>
+              <button
+                type="button"
+                disabled={busy || clockRunning || dispatchScene == null}
+                onClick={() => void run(() => api.dispatchEmergency("POLICE", dispatchScene!))}
+              >
+                Police
+              </button>
             </div>
-            <button
-              type="button"
-              className="btn ghost"
-              style={{ marginTop: 8, width: "100%" }}
-              disabled={busy || clockRunning || tripFrom == null || selectedNodeId == null || tripFrom === selectedNodeId}
-              onClick={() => {
-                if (tripFrom == null || selectedNodeId == null) return;
-                void run(() =>
-                  api.vipConvoy({
-                    from: tripFrom,
-                    to: selectedNodeId,
-                    departAtTick: vipDepartTick,
-                    escorts: 2,
-                  }),
-                );
-              }}
-              title="Use Car tool: click VIP start, then select end node, then convoy"
-            >
-              VIP convoy (start→selected)
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
-              style={{ marginTop: 8, width: "100%" }}
-              disabled={busy || clockRunning}
-              onClick={() => void run(() => api.seedFacilities())}
-            >
-              Seed facilities
-            </button>
-            <button
-              type="button"
-              className="btn primary"
-              style={{ marginTop: 8, width: "100%" }}
-              disabled={busy || clockRunning || session.fleetSize < 1}
-              onClick={() => {
-                void (async () => {
-                  setBusy(true);
-                  try {
-                    const result = await api.comparePolicies(80);
-                    setCompareResult(result);
-                    setError(null);
-                  } catch (e) {
-                    setError(e instanceof Error ? e.message : "Compare failed");
-                  } finally {
-                    setBusy(false);
-                  }
-                })();
-              }}
-            >
-              Run Maps vs CityFlow
-            </button>
+            <div className="ops-row">
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={
+                  busy ||
+                  clockRunning ||
+                  tripFrom == null ||
+                  selectedNodeId == null ||
+                  tripFrom === selectedNodeId
+                }
+                onClick={() => {
+                  if (tripFrom == null || selectedNodeId == null) return;
+                  void run(() =>
+                    api.vipConvoy({
+                      from: tripFrom,
+                      to: selectedNodeId,
+                      departAtTick: vipDepartTick,
+                      escorts: 2,
+                    }),
+                  );
+                }}
+              >
+                VIP
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={busy || clockRunning}
+                onClick={() => void run(() => api.seedFacilities())}
+              >
+                Seed
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={busy || clockRunning || session.fleetSize < 1}
+                onClick={() => {
+                  void (async () => {
+                    setBusy(true);
+                    try {
+                      setCompareResult(await api.comparePolicies(80));
+                      setError(null);
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : "Compare failed");
+                    } finally {
+                      setBusy(false);
+                    }
+                  })();
+                }}
+              >
+                Compare
+              </button>
+            </div>
             {compareResult && (
-              <div className="hint" style={{ marginTop: 10 }}>
-                <div><strong>Verdict:</strong> {compareResult.verdict}</div>
-                <div className="mono" style={{ marginTop: 6 }}>
-                  Maps emerg {compareResult.mapsLike.emergencyArrivalTicks}s · civ avg {compareResult.mapsLike.civilianAvgTicks.toFixed(1)}s
-                </div>
-                <div className="mono">
-                  CityFlow emerg {compareResult.cityFlow.emergencyArrivalTicks}s · civ avg {compareResult.cityFlow.civilianAvgTicks.toFixed(1)}s
-                </div>
-              </div>
-            )}
-            {dispatchScene != null && (
-              <p className="hint">Scene node #{dispatchScene}</p>
+              <p className="compare-line mono">
+                CF {compareResult.cityFlow.emergencyArrivalTicks}s / Maps{" "}
+                {compareResult.mapsLike.emergencyArrivalTicks}s ·{" "}
+                {compareResult.cityFlowWinsEmergency ? "CityFlow" : "Maps"}
+              </p>
             )}
           </div>
 
           <div className="card grow">
-            <h2>Cars</h2>
+            <h2>Fleet</h2>
             <ul className="cars">
-              {fleet.length === 0 && <li className="mute">No cars yet</li>}
+              {fleet.length === 0 && <li className="mute">—</li>}
               {fleet.map((v) => (
                 <li key={v.id}>
                   <div className="car-top">
@@ -754,23 +694,17 @@ export default function App() {
                         ],
                       }}
                     />
-                    <strong>{v.name}{v.serviceClass && v.serviceClass !== "CIVILIAN" ? ` · ${v.serviceClass}` : ""}</strong>
-                    <span className="mute mono">#{v.id}</span>
+                    <strong>
+                      {v.name}
+                      {v.serviceClass && v.serviceClass !== "CIVILIAN" ? ` · ${v.serviceClass[0]}` : ""}
+                    </strong>
                     <span className={`pill ${v.arrived ? "ok" : ""}`}>
-                      {v.arrived ? "done" : clockRunning ? "go" : "ready"}
+                      {v.arrived ? "ok" : clockRunning ? "…" : "·"}
                     </span>
                   </div>
-                  <div className="car-route">
-                    {nodeLabel(session, v.origin)} → {nodeLabel(session, v.destination)}
-                  </div>
                   <div className="car-stats mono">
-                    <span>short {v.plannedShortestTicks}s</span>
-                    <span>live {v.plannedLiveTicks}s</span>
-                    {v.actualTicks != null ? (
-                      <span className="accent">total {v.actualTicks}s</span>
-                    ) : (
-                      <span>from 0s</span>
-                    )}
+                    <span>{v.plannedShortestTicks}→{v.plannedLiveTicks}s</span>
+                    {v.actualTicks != null && <span className="accent">{v.actualTicks}s</span>}
                   </div>
                 </li>
               ))}

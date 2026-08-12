@@ -1,6 +1,6 @@
 export type SessionMode = "BUILD" | "PLAY";
 
-export type CityPreset = "BLANK" | "PLAYGROUND" | "DOWNTOWN" | "MEGACITY";
+export type CityPreset = "BLANK" | "PLAYGROUND" | "DOWNTOWN" | "MEGACITY" | "KOLKATA";
 
 export type ClickTool = "ROAD" | "TRIP" | "CRASH";
 

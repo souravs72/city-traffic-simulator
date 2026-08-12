@@ -27,6 +27,7 @@ import com.traffic.routing.Routers;
 import com.traffic.rules.DynamicEdgeCost;
 import com.traffic.rules.PriorityEdgeCost;
 import com.traffic.rules.Replanner;
+import com.traffic.sim.parallel.SimExecutor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -54,7 +55,9 @@ public final class CitySession {
     private ControlPolicy controlPolicy = ControlPolicy.CITY_FLOW;
     private int worldTick;
     private int mapVersionApplied;
-    private int corridorSeq;
+    private final java.util.concurrent.atomic.AtomicInteger corridorSeq = new java.util.concurrent.atomic.AtomicInteger();
+    private final VipOps vipOps;
+    private final SimExecutor executor = SimExecutor.createDefault();
 
     private CitySession(SimConfig config, EditableCity city, List<Vehicle> fleet) {
         this.config = Objects.requireNonNull(config, "config");
@@ -64,12 +67,30 @@ public final class CitySession {
         this.worldTick = 0;
         this.signals = SignalNetwork.none();
         this.mapVersionApplied = -1;
+        this.vipOps = new VipOps(corridors, corridorSeq);
         applyEdits();
         this.mode = SessionMode.BUILD;
     }
 
     public static CitySession openBlank(SimConfig config) {
         return new CitySession(config, new EditableCity(), List.of());
+    }
+
+    /** Kolkata-inspired megacity with named arterials. */
+    public static CitySession openKolkata(SimConfig config, int fleetSize, long seed) {
+        EditableCity city = OrganicCityGenerator.generateKolkata(seed);
+        FacilitySeeder.seed(city, seed);
+        RoadGraph graph = city.snapshot();
+        TrafficState bootstrap = new TrafficState(graph);
+        EdgeCost cost = new DynamicEdgeCost(bootstrap, config.congestionPenaltyPerCar());
+        List<Vehicle> fleet;
+        if (fleetSize <= 0) {
+            fleet = List.of();
+        } else {
+            List<FleetFactory.Trip> trips = FleetFactory.randomTrips(graph, fleetSize, seed);
+            fleet = FleetFactory.spawn(graph, config, cost, trips);
+        }
+        return new CitySession(config, city, fleet);
     }
 
     /** Busy irregular megacity (organic street fabric). */
@@ -400,93 +421,27 @@ public final class CitySession {
      * then replan civilians onto bypass routes.
      */
     public void armVipLockdown(Vehicle vip, int departAt) {
-        List<EdgeId> edges = vip.remainingEdgesView();
-        if (edges.isEmpty() || !controlPolicy.honorPriority()) {
-            return;
-        }
-        int lead = 3;
-        int start = Math.max(0, departAt - lead);
-        int end = departAt + Math.max(16, edges.size() * 5);
-        VipLockdown.Plan plan = VipLockdown.plan(traffic.graph(), edges);
-        corridors.activate(new CorridorBoard.Corridor(
-                "vip-" + (++corridorSeq),
-                ServiceClass.VIP,
-                plan.hardClosed(),
-                plan.softBuffer(),
-                start,
-                end
-        ));
-        corridors.setCurrentTick(worldTick);
-        replanAroundCorridors();
+        vipOps.armVipLockdown(traffic, controlPolicy, vip, departAt, worldTick, this::replanAroundCorridors);
     }
 
     /** Replan any non-emergency vehicle whose remaining path hits a hard corridor. */
     public int replanAroundCorridors() {
-        if (!controlPolicy.honorPriority() || replanner == null) {
-            return 0;
-        }
-        int n = 0;
-        for (Vehicle vehicle : fleet) {
-            if (vehicle.arrived() || vehicle.serviceClass().isEmergency()) {
-                continue;
-            }
-            if (vehicle.serviceClass() == ServiceClass.VIP) {
-                continue;
-            }
-            if (!(vehicle.position() instanceof VehiclePosition.AtNode)) {
-                continue;
-            }
-            if (!corridors.pathBlocked(vehicle.remainingEdgesView(), vehicle.serviceClass())) {
-                continue;
-            }
-            int before = vehicle.replanCount();
-            if (replanner.replan(vehicle, traffic.graph()) && vehicle.replanCount() > before) {
-                n++;
-            }
-        }
-        return n;
+        return vipOps.replanAroundCorridors(controlPolicy, replanner, fleet, traffic, corridors);
     }
 
     /**
      * Dispatch FIRE / AMBULANCE / POLICE from the nearest matching facility to a scene.
      */
     public Vehicle dispatch(ServiceClass serviceClass, NodeId scene) {
-        Objects.requireNonNull(serviceClass, "serviceClass");
-        Objects.requireNonNull(scene, "scene");
-        if (!serviceClass.isEmergency()) {
-            throw new IllegalArgumentException("dispatch requires FIRE, AMBULANCE, or POLICE");
-        }
-        if (hasUnappliedEdits()) {
-            applyEdits();
-        }
-        FacilityKind want = switch (serviceClass) {
-            case FIRE -> FacilityKind.FIRE_STATION;
-            case AMBULANCE -> FacilityKind.HOSPITAL;
-            case POLICE -> FacilityKind.POLICE_STATION;
-            default -> FacilityKind.NONE;
-        };
-        Node origin = nearestFacility(want, scene);
-        if (origin == null) {
-            throw new IllegalStateException("No " + want.name() + " facility on the map — place one first");
-        }
-        return addTrip(origin.id(), scene, null, serviceClass, 0);
-    }
-
-    private Node nearestFacility(FacilityKind kind, NodeId near) {
-        Node target = traffic.graph().requireNode(near);
-        Node best = null;
-        double bestD = Double.POSITIVE_INFINITY;
-        for (Node n : city.nodes()) {
-            if (n.facility() != kind) {
-                continue;
-            }
-            double d = Math.hypot(n.x() - target.x(), n.y() - target.y());
-            if (d < bestD) {
-                bestD = d;
-                best = n;
-            }
-        }
-        return best;
+        return EmergencyDispatch.dispatch(
+                city,
+                traffic.graph(),
+                serviceClass,
+                scene,
+                hasUnappliedEdits(),
+                this::applyEdits,
+                this::addTrip
+        );
     }
 
     /**
@@ -585,6 +540,7 @@ public final class CitySession {
     }
 
     private void rebuildSimulation() {
+        boolean parallelTick = config.parallelRoutingThreshold() >= 8;
         this.simulation = new Simulation(
                 traffic,
                 signals,
@@ -594,7 +550,9 @@ public final class CitySession {
                 true,
                 config.parallelRoutingThreshold(),
                 corridors,
-                controlPolicy
+                controlPolicy,
+                parallelTick,
+                executor
         );
     }
 

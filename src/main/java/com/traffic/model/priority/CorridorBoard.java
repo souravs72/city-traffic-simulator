@@ -8,10 +8,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Temporary road reservations that divert lower-priority traffic.
- * Hard edges are closed; soft edges are heavily discouraged (cost tax).
+ * Writers refresh an immutable {@link Snapshot}; readers (routing) are lock-free.
  */
 public final class CorridorBoard {
 
@@ -36,7 +37,6 @@ public final class CorridorBoard {
             }
         }
 
-        /** Hard-only corridor (legacy). */
         public Corridor(String id, ServiceClass minClass, Set<EdgeId> edges, int startTick, int endTick) {
             this(id, minClass, edges, Set.of(), startTick, endTick);
         }
@@ -46,33 +46,96 @@ public final class CorridorBoard {
         }
     }
 
+    public record Snapshot(int currentTick, List<Corridor> corridors) {
+        public Snapshot {
+            corridors = List.copyOf(corridors);
+        }
+
+        public boolean blocks(EdgeId edgeId, ServiceClass traveler) {
+            return blocks(edgeId, traveler, currentTick);
+        }
+
+        public boolean blocks(EdgeId edgeId, ServiceClass traveler, int tick) {
+            for (Corridor c : corridors) {
+                if (!c.activeAt(tick)) {
+                    continue;
+                }
+                if (c.edges().contains(edgeId) && traveler.rank() < c.minClass().rank()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public int softMultiplier(EdgeId edgeId, ServiceClass traveler) {
+            return softMultiplier(edgeId, traveler, currentTick);
+        }
+
+        public int softMultiplier(EdgeId edgeId, ServiceClass traveler, int tick) {
+            int mult = 1;
+            for (Corridor c : corridors) {
+                if (!c.activeAt(tick)) {
+                    continue;
+                }
+                if (traveler.rank() < c.minClass().rank() && c.softEdges().contains(edgeId)) {
+                    mult = Math.max(mult, 3);
+                }
+            }
+            return mult;
+        }
+    }
+
+    private final ReentrantLock writeLock = new ReentrantLock();
     private final List<Corridor> corridors = new ArrayList<>();
-    private int currentTick;
+    private volatile Snapshot snapshot = new Snapshot(0, List.of());
 
-    public synchronized void activate(Corridor corridor) {
-        corridors.add(Objects.requireNonNull(corridor, "corridor"));
+    public void activate(Corridor corridor) {
+        writeLock.lock();
+        try {
+            corridors.add(Objects.requireNonNull(corridor, "corridor"));
+            publish();
+        } finally {
+            writeLock.unlock();
+        }
     }
 
-    public synchronized void clear() {
-        corridors.clear();
+    public void clear() {
+        writeLock.lock();
+        try {
+            corridors.clear();
+            publish();
+        } finally {
+            writeLock.unlock();
+        }
     }
 
-    public synchronized void setCurrentTick(int tick) {
-        this.currentTick = tick;
-        expireBefore(tick);
+    public void setCurrentTick(int tick) {
+        writeLock.lock();
+        try {
+            corridors.removeIf(c -> tick > c.endTick());
+            publish(tick);
+        } finally {
+            writeLock.unlock();
+        }
     }
 
-    public synchronized int currentTick() {
-        return currentTick;
+    public int currentTick() {
+        return snapshot.currentTick();
     }
 
-    public synchronized void expireBefore(int tick) {
-        corridors.removeIf(c -> tick > c.endTick());
+    public void expireBefore(int tick) {
+        writeLock.lock();
+        try {
+            corridors.removeIf(c -> tick > c.endTick());
+            publish(tick);
+        } finally {
+            writeLock.unlock();
+        }
     }
 
-    public synchronized List<Corridor> active(int tick) {
+    public List<Corridor> active(int tick) {
         List<Corridor> out = new ArrayList<>();
-        for (Corridor c : corridors) {
+        for (Corridor c : snapshot.corridors()) {
             if (c.activeAt(tick)) {
                 out.add(c);
             }
@@ -80,47 +143,37 @@ public final class CorridorBoard {
         return List.copyOf(out);
     }
 
-    public synchronized boolean blocks(EdgeId edgeId, ServiceClass traveler) {
-        return blocks(edgeId, traveler, currentTick);
+    public Snapshot snapshot() {
+        return snapshot;
     }
 
-    public synchronized boolean blocks(EdgeId edgeId, ServiceClass traveler, int tick) {
+    public boolean blocks(EdgeId edgeId, ServiceClass traveler) {
         Objects.requireNonNull(edgeId, "edgeId");
         Objects.requireNonNull(traveler, "traveler");
-        for (Corridor c : corridors) {
-            if (!c.activeAt(tick)) {
-                continue;
-            }
-            if (c.edges().contains(edgeId) && traveler.rank() < c.minClass().rank()) {
-                return true;
-            }
-        }
-        return false;
+        return snapshot.blocks(edgeId, traveler);
     }
 
-    /** Extra travel-cost multiplier for soft buffer roads (1 = none). */
-    public synchronized int softMultiplier(EdgeId edgeId, ServiceClass traveler) {
-        return softMultiplier(edgeId, traveler, currentTick);
-    }
-
-    public synchronized int softMultiplier(EdgeId edgeId, ServiceClass traveler, int tick) {
+    public boolean blocks(EdgeId edgeId, ServiceClass traveler, int tick) {
         Objects.requireNonNull(edgeId, "edgeId");
         Objects.requireNonNull(traveler, "traveler");
-        int mult = 1;
-        for (Corridor c : corridors) {
-            if (!c.activeAt(tick)) {
-                continue;
-            }
-            if (traveler.rank() < c.minClass().rank() && c.softEdges().contains(edgeId)) {
-                mult = Math.max(mult, 3);
-            }
-        }
-        return mult;
+        return snapshot.blocks(edgeId, traveler, tick);
     }
 
-    public synchronized Set<EdgeId> blockedEdgesFor(ServiceClass traveler, int tick) {
+    public int softMultiplier(EdgeId edgeId, ServiceClass traveler) {
+        Objects.requireNonNull(edgeId, "edgeId");
+        Objects.requireNonNull(traveler, "traveler");
+        return snapshot.softMultiplier(edgeId, traveler);
+    }
+
+    public int softMultiplier(EdgeId edgeId, ServiceClass traveler, int tick) {
+        Objects.requireNonNull(edgeId, "edgeId");
+        Objects.requireNonNull(traveler, "traveler");
+        return snapshot.softMultiplier(edgeId, traveler, tick);
+    }
+
+    public Set<EdgeId> blockedEdgesFor(ServiceClass traveler, int tick) {
         Set<EdgeId> blocked = new HashSet<>();
-        for (Corridor c : corridors) {
+        for (Corridor c : snapshot.corridors()) {
             if (!c.activeAt(tick)) {
                 continue;
             }
@@ -131,32 +184,33 @@ public final class CorridorBoard {
         return Set.copyOf(blocked);
     }
 
-    /** True if any corridor is armed (scheduled or live) and not yet expired. */
-    public synchronized boolean hasActive() {
-        return corridors.stream().anyMatch(c -> currentTick <= c.endTick());
+    public boolean hasActive() {
+        int tick = snapshot.currentTick();
+        return snapshot.corridors().stream().anyMatch(c -> tick <= c.endTick());
     }
 
-    /** True if a corridor is inside its live window right now. */
-    public synchronized boolean isLive() {
-        return corridors.stream().anyMatch(c -> c.activeAt(currentTick));
+    public boolean isLive() {
+        int tick = snapshot.currentTick();
+        return snapshot.corridors().stream().anyMatch(c -> c.activeAt(tick));
     }
 
-    /** Hard locks visible in UI: live now, or armed and not expired (preview before VIP departs). */
-    public synchronized Set<EdgeId> activeHardEdges() {
+    public Set<EdgeId> activeHardEdges() {
+        int tick = snapshot.currentTick();
         Set<EdgeId> hard = new HashSet<>();
-        for (Corridor c : corridors) {
-            if (currentTick <= c.endTick()) {
+        for (Corridor c : snapshot.corridors()) {
+            if (tick <= c.endTick()) {
                 hard.addAll(c.edges());
             }
         }
         return Set.copyOf(hard);
     }
 
-    public synchronized Set<EdgeId> activeSoftEdges() {
+    public Set<EdgeId> activeSoftEdges() {
+        int tick = snapshot.currentTick();
         Set<EdgeId> soft = new HashSet<>();
         Set<EdgeId> hard = activeHardEdges();
-        for (Corridor c : corridors) {
-            if (currentTick <= c.endTick()) {
+        for (Corridor c : snapshot.corridors()) {
+            if (tick <= c.endTick()) {
                 soft.addAll(c.softEdges());
             }
         }
@@ -164,13 +218,21 @@ public final class CorridorBoard {
         return Set.copyOf(soft);
     }
 
-    /** True if any remaining edge on a path is hard-blocked for this class. */
-    public synchronized boolean pathBlocked(Iterable<EdgeId> edges, ServiceClass traveler) {
+    public boolean pathBlocked(Iterable<EdgeId> edges, ServiceClass traveler) {
+        Snapshot snap = snapshot;
         for (EdgeId id : edges) {
-            if (blocks(id, traveler)) {
+            if (snap.blocks(id, traveler)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private void publish() {
+        publish(snapshot.currentTick());
+    }
+
+    private void publish(int tick) {
+        snapshot = new Snapshot(tick, List.copyOf(corridors));
     }
 }

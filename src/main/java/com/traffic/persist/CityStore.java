@@ -6,9 +6,10 @@ import com.traffic.api.dto.CityBlueprintDto;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Optional;
 
-/** Disk persistence for the active city blueprint. */
+/** Disk persistence for the active city blueprint (atomic replace). */
 public final class CityStore {
 
     private final Path file;
@@ -36,8 +37,17 @@ public final class CityStore {
 
     public void save(CityBlueprintDto blueprint) {
         try {
-            Files.createDirectories(file.getParent());
-            json.writerWithDefaultPrettyPrinter().writeValue(file.toFile(), blueprint);
+            Path parent = file.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+            json.writerWithDefaultPrettyPrinter().writeValue(tmp.toFile(), blueprint);
+            try {
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException atomicFailed) {
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException ex) {
             System.err.println("Could not save city: " + ex.getMessage());
         }
@@ -46,6 +56,7 @@ public final class CityStore {
     public void clear() {
         try {
             Files.deleteIfExists(file);
+            Files.deleteIfExists(file.resolveSibling(file.getFileName() + ".tmp"));
         } catch (IOException ex) {
             System.err.println("Could not clear city save: " + ex.getMessage());
         }

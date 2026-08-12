@@ -2,9 +2,6 @@ package com.traffic.api;
 
 import com.traffic.api.dto.AccidentRequest;
 import com.traffic.api.dto.AddNodeRequest;
-import com.traffic.api.dto.BlueprintAccidentDto;
-import com.traffic.api.dto.BlueprintEdgeDto;
-import com.traffic.api.dto.BlueprintTripDto;
 import com.traffic.api.dto.CityBlueprintDto;
 import com.traffic.api.dto.ConnectEdgeRequest;
 import com.traffic.api.dto.CreateSessionRequest;
@@ -15,462 +12,430 @@ import com.traffic.api.dto.VipConvoyRequest;
 import com.traffic.api.dto.CompareRequest;
 import com.traffic.api.dto.PolicyCompareDto;
 import com.traffic.api.dto.IdRequest;
-import com.traffic.api.dto.NodeDto;
 import com.traffic.api.dto.RushRequest;
 import com.traffic.api.dto.SessionSnapshotDto;
 import com.traffic.api.dto.TripRequest;
 import com.traffic.config.CityGenConfig;
 import com.traffic.config.CityPreset;
 import com.traffic.config.SimConfig;
-import com.traffic.model.graph.Edge;
 import com.traffic.model.graph.EdgeId;
 import com.traffic.model.graph.FacilityKind;
-import com.traffic.model.graph.Node;
 import com.traffic.model.graph.NodeId;
 import com.traffic.model.graph.RoadType;
 import com.traffic.model.signal.LightTiming;
 import com.traffic.model.vehicle.ServiceClass;
-import com.traffic.model.vehicle.Vehicle;
 import com.traffic.model.priority.ControlPolicy;
 import com.traffic.persist.CityStore;
 import com.traffic.routing.RoutingAlgorithm;
 import com.traffic.rules.AccidentFlavor;
 import com.traffic.sim.CitySession;
+import com.traffic.sim.PolicyArena;
 import com.traffic.sim.SessionMode;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.List;
+import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
-/** Single session for the React UI, auto-saved to disk. */
+/**
+ * Multi-session hub: each browser/API client binds an id ({@code X-Session-Id}).
+ * Persist runs after releasing the per-session lock.
+ */
 public final class SessionHub {
 
-    private final CityStore store;
-    private CitySession session;
-    private String activePreset = "BLANK";
+    public static final String DEFAULT_SESSION = "default";
+
+    private final ApiConfig limits;
+    private final Path dataDir;
+    private final ConcurrentHashMap<String, Slot> sessions = new ConcurrentHashMap<>();
+    private final ThreadLocal<String> boundId = ThreadLocal.withInitial(() -> DEFAULT_SESSION);
 
     public SessionHub() {
-        this(CityStore.defaultStore());
+        this(CityStore.defaultStore(), ApiConfig.localLab(8080, Path.of("data")));
     }
 
     public SessionHub(CityStore store) {
-        this.store = store;
+        this(store, ApiConfig.localLab(8080, store.path().getParent() == null
+                ? Path.of("data")
+                : store.path().getParent()));
     }
 
-    public synchronized SessionSnapshotDto create(CreateSessionRequest req) {
-        boolean hasSave = store.load().isPresent();
-        if (hasSave && !req.replaceSaved()) {
-            throw new IllegalStateException(
-                    "A saved city already exists. Use New city, or confirm replaceSaved to overwrite.");
+    public SessionHub(CityStore store, ApiConfig limits) {
+        this.limits = Objects.requireNonNull(limits, "limits");
+        this.dataDir = limits.dataDir();
+        // Seed default slot with provided store path for backward-compatible tests.
+        sessions.put(DEFAULT_SESSION, new Slot(DEFAULT_SESSION, store));
+    }
+
+    public void bind(String sessionId) {
+        String id = (sessionId == null || sessionId.isBlank()) ? DEFAULT_SESSION : sessionId.trim();
+        boundId.set(id);
+        sessions.computeIfAbsent(id, this::newSlot);
+    }
+
+    public String boundSessionId() {
+        return boundId.get();
+    }
+
+    public int sessionCount() {
+        return sessions.size();
+    }
+
+    private Slot newSlot(String id) {
+        Path file = dataDir.resolve("city-flow-" + sanitize(id) + ".json");
+        return new Slot(id, new CityStore(file));
+    }
+
+    private static String sanitize(String id) {
+        return id.replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
+
+    private Slot slot() {
+        return sessions.computeIfAbsent(boundId.get(), this::newSlot);
+    }
+
+    public Map<String, Object> healthDetails() {
+        Slot s = slot();
+        synchronized (s) {
+            s.ensureSession();
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("hasSession", s.session != null);
+            details.put("sessionId", s.id);
+            details.put("sessionCount", sessions.size());
+            if (s.session != null) {
+                details.put("preset", s.activePreset);
+                details.put("sessionMode", s.session.mode().name());
+                details.put("worldTick", s.session.worldTick());
+                details.put("fleetSize", s.session.fleet().size());
+                details.put("nodeCount", s.session.city().nodes().size());
+                details.put("parallelTick", s.session.simulation() != null && s.session.simulation().parallelTick());
+            }
+            details.put("savePath", s.store.path().toString());
+            return details;
         }
-        boolean namedPreset = req.preset() != null && !req.preset().isBlank();
-        CityPreset preset = namedPreset
-                ? CityPreset.parse(req.preset())
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Unknown preset: " + req.preset()
-                                + " (use BLANK, PLAYGROUND, DOWNTOWN, or MEGACITY)"))
-                : CityPreset.BLANK;
+    }
 
-        int fleet = req.fleetSize() > 0 ? req.fleetSize() : preset.defaultFleetSize();
-        int fuel = req.initialFuel() > 0 ? req.initialFuel() : preset.defaultFuel();
-        int parallelThreshold = preset.parallelRoutingThreshold();
-        int maxTicks = req.maxTicks() > 0 ? req.maxTicks() : preset.defaultMaxTicks();
-        long seed = req.seed();
-
-        RoutingAlgorithm algorithm = (preset == CityPreset.MEGACITY)
-                ? RoutingAlgorithm.ASTAR
-                : RoutingAlgorithm.DIJKSTRA;
-
-        SimConfig config = defaultConfig(maxTicks, fuel, algorithm, parallelThreshold);
-
-        if (!namedPreset && req.rows() > 0 && req.cols() > 0) {
-            CityGenConfig gen = new CityGenConfig(req.rows(), req.cols(), 80.0, 3, true);
-            this.session = CitySession.openGrid(config, gen, Math.max(fleet, req.fleetSize()), seed);
-            this.activePreset = "CUSTOM";
-        } else if (preset.isBlank()) {
-            this.session = CitySession.openBlank(config);
-            this.activePreset = "BLANK";
-        } else if (preset == CityPreset.MEGACITY) {
-            this.session = CitySession.openOrganic(config, fleet, seed);
-            this.activePreset = "MEGACITY";
-        } else {
-            this.session = CitySession.openGrid(config, preset.toGenConfig(), fleet, seed);
-            this.activePreset = preset.name();
+    public SessionSnapshotDto create(CreateSessionRequest req) {
+        Slot s = slot();
+        CityBlueprintDto toSave;
+        SessionSnapshotDto snap;
+        synchronized (s) {
+            snap = s.create(req, limits);
+            toSave = s.blueprintOrNull();
         }
-        persist();
-        return SnapshotMapper.from(session);
+        persistOutside(s, toSave);
+        return snap;
     }
 
-    /** Wipe save and start a fresh Playground city (editable starter map). */
-    public synchronized SessionSnapshotDto newCity() {
-        store.clear();
-        return create(new CreateSessionRequest("PLAYGROUND", 0, 0, 0, 42L, 0, 300, true));
-    }
-
-    public synchronized SessionSnapshotDto snapshot() {
-        ensureSession();
-        return SnapshotMapper.from(requireSession());
-    }
-
-    public synchronized boolean hasSession() {
-        ensureSession();
-        return session != null;
-    }
-
-    public synchronized CityBlueprintDto exportBlueprint() {
-        ensureSession();
-        return toBlueprint(requireSession(), activePreset);
-    }
-
-    public synchronized SessionSnapshotDto restore(CityBlueprintDto blueprint) {
-        this.session = fromBlueprint(blueprint);
-        this.activePreset = blueprint.preset() == null ? "BLANK" : blueprint.preset();
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto build() {
-        requireSession().build();
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto play() {
-        requireSession().play();
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto apply() {
-        requireSession().applyEdits();
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto step() {
-        requireSession().step();
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto run(int ticks) {
-        CitySession s = requireSession();
-        int n = ticks > 0 ? ticks : 10;
-        s.run(n);
-        persist();
-        return SnapshotMapper.from(s);
-    }
-
-    public synchronized SessionSnapshotDto addNode(AddNodeRequest req) {
-        CitySession s = requireSession();
-        if (s.mode() != SessionMode.BUILD) {
-            throw new IllegalStateException("Add nodes only in BUILD mode — pause the clock first");
+    public SessionSnapshotDto newCity() {
+        Slot s = slot();
+        CityBlueprintDto toSave;
+        SessionSnapshotDto snap;
+        synchronized (s) {
+            s.store.clear();
+            snap = s.create(new CreateSessionRequest("PLAYGROUND", 0, 0, 0, 42L, 0, 300, true), limits);
+            toSave = s.blueprintOrNull();
         }
-        s.addNode(req.x(), req.y(), req.label());
-        persist();
-        return SnapshotMapper.from(s);
+        persistOutside(s, toSave);
+        return snap;
     }
 
-    public synchronized SessionSnapshotDto removeNode(IdRequest req) {
-        CitySession s = requireSession();
-        if (s.mode() != SessionMode.BUILD) {
-            throw new IllegalStateException("Delete nodes only in BUILD mode — pause the clock first");
+    public SessionSnapshotDto snapshot() {
+        synchronized (slot()) {
+            return SnapshotMapper.from(slot().requireSession());
         }
-        s.removeNode(new NodeId(req.id()));
-        persist();
-        return SnapshotMapper.from(s);
     }
 
-    public synchronized SessionSnapshotDto connect(ConnectEdgeRequest req) {
-        CitySession s = requireSession();
-        if (s.mode() != SessionMode.BUILD) {
-            throw new IllegalStateException("Connect edges only in BUILD mode — pause the clock first");
+    public boolean hasSession() {
+        synchronized (slot()) {
+            slot().ensureSession();
+            return slot().session != null;
         }
-        RoadType type = RoadType.parse(req.roadType());
-        int weight = type.travelTicks();
-        int cap = req.capacity() > 0 ? req.capacity() : type.capacity();
-        NodeId from = new NodeId(req.from());
-        NodeId to = new NodeId(req.to());
-        if (req.twoWay()) {
-            s.city().connectOneWay(from, to, weight, cap);
-            s.city().connectOneWay(to, from, weight, cap);
-        } else {
-            s.city().connectOneWay(from, to, weight, cap);
+    }
+
+    public CityBlueprintDto exportBlueprint() {
+        synchronized (slot()) {
+            Slot s = slot();
+            return BlueprintMapper.toBlueprint(s.requireSession(), s.activePreset);
         }
-        persist();
-        return SnapshotMapper.from(s);
     }
 
-    public synchronized SessionSnapshotDto removeEdge(IdRequest req) {
-        CitySession s = requireSession();
-        if (s.mode() != SessionMode.BUILD) {
-            throw new IllegalStateException("Delete roads only in BUILD mode — pause the clock first");
+    public SessionSnapshotDto restore(CityBlueprintDto blueprint) {
+        Slot s = slot();
+        CityBlueprintDto toSave;
+        SessionSnapshotDto snap;
+        synchronized (s) {
+            s.session = BlueprintMapper.fromBlueprint(blueprint);
+            s.activePreset = blueprint.preset() == null ? "BLANK" : blueprint.preset();
+            snap = SnapshotMapper.from(s.session);
+            toSave = s.blueprintOrNull();
         }
-        s.removeRoad(new EdgeId(req.id()));
-        persist();
-        return SnapshotMapper.from(s);
+        persistOutside(s, toSave);
+        return snap;
     }
 
-    public synchronized SessionSnapshotDto accident(AccidentRequest req) {
-        CitySession s = requireSession();
-        String caption = req.caption() == null || req.caption().isBlank()
-                ? AccidentFlavor.randomCaption()
-                : req.caption();
-        int duration = req.durationTicks() > 0 ? req.durationTicks() : s.config().accidentDurationTicks();
-        s.traffic().reportAccident(new EdgeId(req.edgeId()), duration, caption);
-        persist();
-        return SnapshotMapper.from(s);
-    }
+    public SessionSnapshotDto build() { return mutate(CitySession::build); }
+    public SessionSnapshotDto play() { return mutate(CitySession::play); }
+    public SessionSnapshotDto apply() { return mutate(CitySession::applyEdits); }
+    public SessionSnapshotDto step() { return mutate(CitySession::step); }
 
-    public synchronized SessionSnapshotDto setFacility(FacilityRequest req) {
-        requireSession();
-        session.setFacility(new NodeId(req.nodeId()), FacilityKind.parse(req.facility()));
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto setPolicy(PolicyRequest req) {
-        requireSession();
-        session.setControlPolicy(ControlPolicy.valueOf(
-                req.policy() == null ? "CITY_FLOW" : req.policy().trim().toUpperCase()));
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto dispatch(DispatchRequest req) {
-        requireSession();
-        session.dispatch(ServiceClass.parse(req.serviceClass()), new NodeId(req.sceneNodeId()));
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto vipConvoy(VipConvoyRequest req) {
-        requireSession();
-        int escorts = req.escorts() > 0 ? req.escorts() : 2;
-        session.scheduleVipConvoy(
-                new NodeId(req.from()),
-                new NodeId(req.to()),
-                req.departAtTick(),
-                escorts
-        );
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized PolicyCompareDto compare(CompareRequest req) {
-        requireSession();
-        int ticks = req == null || req.ticks() <= 0 ? 80 : req.ticks();
-        // Snapshot blueprint without mutating live session policy permanently.
-        return com.traffic.sim.PolicyArena.compare(toBlueprint(session, activePreset), ticks);
-    }
-
-    public synchronized SessionSnapshotDto seedFacilities() {
-        requireSession();
-        session.ensureFacilities(42L);
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto addTrip(TripRequest req) {
-        requireSession();
-        String name = (req.name() == null || req.name().isBlank()) ? null : req.name().trim();
-        session.addTrip(
-                new NodeId(req.from()),
-                new NodeId(req.to()),
-                name,
-                ServiceClass.parse(req.serviceClass()),
-                req.scheduledDepartAtTick()
-        );
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto addRandomTrip() {
-        requireSession().addRandomTrip();
-        persist();
-        return SnapshotMapper.from(session);
-    }
-
-    public synchronized SessionSnapshotDto addRushHour(RushRequest req) {
-        CitySession s = requireSession();
-        int count = req == null || req.count() <= 0 ? 8 : Math.min(40, req.count());
-        s.addRushHour(count);
-        persist();
-        return SnapshotMapper.from(s);
-    }
-
-    private void ensureSession() {
-        if (session != null) {
-            return;
+    public SessionSnapshotDto run(int ticks) {
+        Slot s = slot();
+        CityBlueprintDto toSave;
+        SessionSnapshotDto snap;
+        synchronized (s) {
+            CitySession cs = s.requireSession();
+            cs.run(ticks > 0 ? ticks : 10);
+            snap = SnapshotMapper.from(cs);
+            toSave = s.blueprintOrNull();
         }
-        store.load().ifPresent(bp -> {
-            try {
-                this.session = fromBlueprint(bp);
-                this.activePreset = bp.preset() == null ? "BLANK" : bp.preset();
-                System.out.println("Restored city from " + store.path());
-            } catch (Exception ex) {
-                System.err.println("Saved city unreadable: " + ex.getMessage());
+        persistOutside(s, toSave);
+        return snap;
+    }
+
+    public SessionSnapshotDto addNode(AddNodeRequest req) {
+        return mutate(cs -> {
+            if (cs.mode() != SessionMode.BUILD) {
+                throw new IllegalStateException("Add nodes only in BUILD mode — pause the clock first");
+            }
+            cs.addNode(req.x(), req.y(), req.label());
+        });
+    }
+
+    public SessionSnapshotDto removeNode(IdRequest req) {
+        return mutate(cs -> {
+            if (cs.mode() != SessionMode.BUILD) {
+                throw new IllegalStateException("Delete nodes only in BUILD mode — pause the clock first");
+            }
+            cs.removeNode(new NodeId(req.id()));
+        });
+    }
+
+    public SessionSnapshotDto connect(ConnectEdgeRequest req) {
+        return mutate(cs -> {
+            if (cs.mode() != SessionMode.BUILD) {
+                throw new IllegalStateException("Connect edges only in BUILD mode — pause the clock first");
+            }
+            RoadType type = RoadType.parse(req.roadType());
+            int weight = type.travelTicks();
+            int cap = req.capacity() > 0 ? req.capacity() : type.capacity();
+            NodeId from = new NodeId(req.from());
+            NodeId to = new NodeId(req.to());
+            if (req.twoWay()) {
+                cs.city().connectOneWay(from, to, weight, cap);
+                cs.city().connectOneWay(to, from, weight, cap);
+            } else {
+                cs.city().connectOneWay(from, to, weight, cap);
             }
         });
     }
 
-    private void persist() {
-        if (session == null) {
-            return;
-        }
-        store.save(toBlueprint(session, activePreset));
-    }
-
-    private CitySession requireSession() {
-        ensureSession();
-        if (session == null) {
-            throw new IllegalStateException("No session — POST /api/session first");
-        }
-        return session;
-    }
-
-    private static SimConfig defaultConfig(
-            int maxTicks,
-            int fuel,
-            RoutingAlgorithm algorithm,
-            int parallelThreshold
-    ) {
-        return new SimConfig(
-                maxTicks,
-                fuel,
-                algorithm,
-                LightTiming.playful(),
-                2,
-                8,
-                false,
-                parallelThreshold
-        );
-    }
-
-    static CityBlueprintDto toBlueprint(CitySession session, String preset) {
-        List<NodeDto> nodes = new ArrayList<>();
-        for (Node node : session.city().nodes()) {
-            nodes.add(new NodeDto(node.id().value(), node.label(), node.x(), node.y(), node.facility().name()));
-        }
-        nodes.sort(Comparator.comparingInt(NodeDto::id));
-
-        List<BlueprintEdgeDto> edges = new ArrayList<>();
-        for (Edge edge : session.city().edges()) {
-            RoadType type = RoadType.classify(edge.baseWeight(), edge.capacity());
-            edges.add(new BlueprintEdgeDto(
-                    edge.from().value(),
-                    edge.to().value(),
-                    edge.baseWeight(),
-                    edge.capacity(),
-                    type.name()
-            ));
-        }
-
-        List<BlueprintTripDto> trips = new ArrayList<>();
-        for (Vehicle v : session.fleet()) {
-            trips.add(new BlueprintTripDto(v.origin().value(), v.destination().value(), v.name(), v.serviceClass().name(), v.scheduledDepartAtTick()));
-        }
-
-        List<BlueprintAccidentDto> accidents = new ArrayList<>();
-        for (var accident : session.traffic().activeAccidents()) {
-            var edge = session.city().edge(accident.edgeId()).orElse(null);
-            if (edge == null) {
-                continue;
+    public SessionSnapshotDto removeEdge(IdRequest req) {
+        return mutate(cs -> {
+            if (cs.mode() != SessionMode.BUILD) {
+                throw new IllegalStateException("Delete roads only in BUILD mode — pause the clock first");
             }
-            accidents.add(new BlueprintAccidentDto(
-                    edge.from().value(),
-                    edge.to().value(),
-                    accident.ticksRemaining(),
-                    accident.caption()
-            ));
-        }
-
-        return new CityBlueprintDto(
-                preset == null ? "BLANK" : preset,
-                nodes,
-                edges,
-                trips,
-                accidents
-        );
+            cs.removeRoad(new EdgeId(req.id()));
+        });
     }
 
-    public static CitySession sessionFromBlueprint(CityBlueprintDto bp) {
-        return fromBlueprint(bp);
+    public SessionSnapshotDto accident(AccidentRequest req) {
+        return mutate(cs -> {
+            String caption = req.caption() == null || req.caption().isBlank()
+                    ? AccidentFlavor.randomCaption()
+                    : req.caption();
+            int duration = req.durationTicks() > 0 ? req.durationTicks() : cs.config().accidentDurationTicks();
+            cs.traffic().reportAccident(new EdgeId(req.edgeId()), duration, caption);
+        });
     }
 
-    static CitySession fromBlueprint(CityBlueprintDto bp) {
-        SimConfig config = defaultConfig(300, 120, RoutingAlgorithm.DIJKSTRA, 8);
-        CitySession session = CitySession.openBlank(config);
-        Map<Integer, NodeId> remap = new HashMap<>();
+    public SessionSnapshotDto setFacility(FacilityRequest req) {
+        return mutate(cs -> cs.setFacility(new NodeId(req.nodeId()), FacilityKind.parse(req.facility())));
+    }
 
-        List<NodeDto> nodes = new ArrayList<>(bp.nodes() == null ? List.of() : bp.nodes());
-        nodes.sort(Comparator.comparingInt(NodeDto::id));
-        for (NodeDto node : nodes) {
-            FacilityKind facility = FacilityKind.parse(node.facility());
-            Node created = session.addNode(node.x(), node.y(), node.label(), facility);
-            remap.put(node.id(), created.id());
+    public SessionSnapshotDto setPolicy(PolicyRequest req) {
+        return mutate(cs -> cs.setControlPolicy(ControlPolicy.valueOf(
+                req.policy() == null ? "CITY_FLOW" : req.policy().trim().toUpperCase())));
+    }
+
+    public SessionSnapshotDto dispatch(DispatchRequest req) {
+        return mutate(cs -> cs.dispatch(ServiceClass.parse(req.serviceClass()), new NodeId(req.sceneNodeId())));
+    }
+
+    public SessionSnapshotDto vipConvoy(VipConvoyRequest req) {
+        return mutate(cs -> {
+            int escorts = req.escorts() > 0 ? req.escorts() : 2;
+            cs.scheduleVipConvoy(new NodeId(req.from()), new NodeId(req.to()), req.departAtTick(), escorts);
+        });
+    }
+
+    public PolicyCompareDto compare(CompareRequest req) {
+        synchronized (slot()) {
+            Slot s = slot();
+            CitySession cs = s.requireSession();
+            int ticks = req == null || req.ticks() <= 0 ? 80 : req.ticks();
+            return PolicyArena.compare(BlueprintMapper.toBlueprint(cs, s.activePreset), ticks);
+        }
+    }
+
+    public SessionSnapshotDto seedFacilities() {
+        return mutate(cs -> cs.ensureFacilities(42L));
+    }
+
+    public SessionSnapshotDto addTrip(TripRequest req) {
+        return mutate(cs -> {
+            String name = (req.name() == null || req.name().isBlank()) ? null : req.name().trim();
+            cs.addTrip(
+                    new NodeId(req.from()),
+                    new NodeId(req.to()),
+                    name,
+                    ServiceClass.parse(req.serviceClass()),
+                    req.scheduledDepartAtTick()
+            );
+        });
+    }
+
+    public SessionSnapshotDto addRandomTrip() {
+        return mutate(CitySession::addRandomTrip);
+    }
+
+    public SessionSnapshotDto addRushHour(RushRequest req) {
+        return mutate(cs -> {
+            int requested = req == null || req.count() <= 0 ? 8 : req.count();
+            cs.addRushHour(limits.clampRush(requested));
+        });
+    }
+
+    /** Allocate a fresh isolated session id (for multi-tab demos). */
+    public String allocateSessionId() {
+        String id = "s-" + UUID.randomUUID().toString().substring(0, 8);
+        sessions.computeIfAbsent(id, this::newSlot);
+        return id;
+    }
+
+    private SessionSnapshotDto mutate(SessionOp op) {
+        Slot s = slot();
+        CityBlueprintDto toSave;
+        SessionSnapshotDto snap;
+        synchronized (s) {
+            CitySession cs = s.requireSession();
+            op.apply(cs);
+            snap = SnapshotMapper.from(cs);
+            toSave = s.blueprintOrNull();
+        }
+        persistOutside(s, toSave);
+        return snap;
+    }
+
+    private void persistOutside(Slot s, CityBlueprintDto blueprint) {
+        if (blueprint != null) {
+            s.store.save(blueprint);
+        }
+    }
+
+    @FunctionalInterface
+    private interface SessionOp {
+        void apply(CitySession session);
+    }
+
+    private final class Slot {
+        private final String id;
+        private final CityStore store;
+        private CitySession session;
+        private String activePreset = "BLANK";
+
+        private Slot(String id, CityStore store) {
+            this.id = id;
+            this.store = store;
         }
 
-        if (bp.edges() != null) {
-            for (BlueprintEdgeDto edge : bp.edges()) {
-                NodeId from = remap.get(edge.from());
-                NodeId to = remap.get(edge.to());
-                if (from == null || to == null) {
-                    continue;
-                }
-                int weight = edge.baseWeight() > 0
-                        ? edge.baseWeight()
-                        : RoadType.parse(edge.roadType()).travelTicks();
-                int cap = edge.capacity() > 0
-                        ? edge.capacity()
-                        : RoadType.parse(edge.roadType()).capacity();
-                if (session.city().findEdge(from, to).isEmpty()) {
-                    session.city().addEdgeExplicit(from, to, weight, cap);
-                }
+        private CityBlueprintDto blueprintOrNull() {
+            if (session == null) {
+                return null;
             }
+            return BlueprintMapper.toBlueprint(session, activePreset);
         }
 
-        session.applyEdits();
+        private SessionSnapshotDto create(CreateSessionRequest req, ApiConfig limits) {
+            boolean hasSave = store.load().isPresent();
+            if (hasSave && !req.replaceSaved()) {
+                throw new IllegalStateException(
+                        "A saved city already exists. Use New city, or confirm replaceSaved to overwrite.");
+            }
+            limits.validateCreate(req.rows(), req.cols(), req.fleetSize());
+            boolean namedPreset = req.preset() != null && !req.preset().isBlank();
+            CityPreset preset = namedPreset
+                    ? CityPreset.parse(req.preset())
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Unknown preset: " + req.preset()
+                                    + " (use BLANK, PLAYGROUND, DOWNTOWN, MEGACITY, or KOLKATA)"))
+                    : CityPreset.BLANK;
 
-        if (bp.trips() != null) {
-            for (BlueprintTripDto trip : bp.trips()) {
-                NodeId from = remap.get(trip.from());
-                NodeId to = remap.get(trip.to());
-                if (from == null || to == null || from.equals(to)) {
-                    continue;
-                }
-                String name = trip.name() == null || trip.name().isBlank() ? "Car" : trip.name();
-                ServiceClass sc = ServiceClass.parse(trip.serviceClass());
-                int depart = trip.scheduledDepartAtTick();
+            int fleet = req.fleetSize() > 0 ? req.fleetSize() : preset.defaultFleetSize();
+            if (fleet > limits.maxFleet()) {
+                throw new IllegalArgumentException(
+                        "Fleet too large — max " + limits.maxFleet() + " (got " + fleet + ")");
+            }
+            int fuel = req.initialFuel() > 0 ? req.initialFuel() : preset.defaultFuel();
+            int parallelThreshold = preset.parallelRoutingThreshold();
+            int maxTicks = req.maxTicks() > 0 ? req.maxTicks() : preset.defaultMaxTicks();
+            long seed = req.seed();
+
+            RoutingAlgorithm algorithm = (preset == CityPreset.MEGACITY || preset == CityPreset.KOLKATA)
+                    ? RoutingAlgorithm.ASTAR
+                    : RoutingAlgorithm.DIJKSTRA;
+
+            SimConfig config = new SimConfig(
+                    maxTicks, fuel, algorithm, LightTiming.playful(), 2, 8, false, parallelThreshold);
+
+            if (!namedPreset && req.rows() > 0 && req.cols() > 0) {
+                CityGenConfig gen = new CityGenConfig(req.rows(), req.cols(), 80.0, 3, true);
+                this.session = CitySession.openGrid(config, gen, Math.max(fleet, req.fleetSize()), seed);
+                this.activePreset = "CUSTOM";
+            } else if (preset.isBlank()) {
+                this.session = CitySession.openBlank(config);
+                this.activePreset = "BLANK";
+            } else if (preset == CityPreset.MEGACITY) {
+                this.session = CitySession.openOrganic(config, fleet, seed);
+                this.activePreset = "MEGACITY";
+            } else if (preset == CityPreset.KOLKATA) {
+                this.session = CitySession.openKolkata(config, fleet, seed);
+                this.activePreset = "KOLKATA";
+            } else {
+                this.session = CitySession.openGrid(config, preset.toGenConfig(), fleet, seed);
+                this.activePreset = preset.name();
+            }
+            return SnapshotMapper.from(session);
+        }
+
+        private void ensureSession() {
+            if (session != null) {
+                return;
+            }
+            store.load().ifPresent(bp -> {
                 try {
-                    session.addTrip(from, to, name, sc, depart);
-                } catch (RuntimeException ignored) {
-                    // skip trips that no longer have a path
+                    this.session = BlueprintMapper.fromBlueprint(bp);
+                    this.activePreset = bp.preset() == null ? "BLANK" : bp.preset();
+                    System.out.println("Restored city [" + id + "] from " + store.path());
+                } catch (Exception ex) {
+                    System.err.println("Saved city unreadable: " + ex.getMessage());
                 }
-            }
+            });
         }
 
-        if (bp.accidents() != null) {
-            for (BlueprintAccidentDto accident : bp.accidents()) {
-                NodeId from = remap.get(accident.from());
-                NodeId to = remap.get(accident.to());
-                if (from == null || to == null) {
-                    continue;
-                }
-                session.city().findEdge(from, to).ifPresent(edge -> {
-                    int duration = accident.durationTicks() > 0 ? accident.durationTicks() : 20;
-                    session.traffic().reportAccident(
-                            edge.id(),
-                            duration,
-                            accident.caption() == null ? "Road closed" : accident.caption()
-                    );
-                });
+        private CitySession requireSession() {
+            ensureSession();
+            if (session == null) {
+                throw new IllegalStateException("No session — POST /api/session first");
             }
+            return session;
         }
+    }
 
-        session.build();
-        return session;
+    /** @deprecated use {@link BlueprintMapper#fromBlueprint} */
+    public static CitySession sessionFromBlueprint(CityBlueprintDto bp) {
+        return BlueprintMapper.fromBlueprint(bp);
     }
 }

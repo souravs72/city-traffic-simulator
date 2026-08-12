@@ -819,3 +819,55 @@
   background: #ff7a7e;
   top: 35%;
 }
+
+.hero-pitch {
+  font-weight: 600;
+  margin: 0.25rem 0 0.5rem;
+  color: var(--accent, #c45c26);
+}
+
+.ops-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+.ops-row .btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.75rem;
+}
+.compare-line {
+  margin: 0.5rem 0 0;
+  font-size: 0.72rem;
+  color: var(--mute);
+  line-height: 1.35;
+}
+.stage-foot {
+  padding: 0.45rem 0.75rem;
+}
+.legend {
+  gap: 0.65rem;
+  font-size: 0.68rem;
+}
+.top {
+  margin-bottom: 0.65rem;
+}
+.rail .hint,
+.hero-pitch,
+.vip-depart-hint,
+.vip-depart-badge,
+.vip-depart-label,
+.vip-depart-body,
+.tool-hint,
+.live-hint,
+.selection-inline,
+.card.help {
+  display: none !important;
+}
+.vip-depart {
+  padding: 0.15rem;
+  border: none;
+  background: transparent;
+}

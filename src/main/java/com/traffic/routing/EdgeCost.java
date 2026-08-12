@@ -4,10 +4,13 @@ import com.traffic.model.graph.Edge;
 
 /**
  * Cost of traversing an edge right now.
- * Today: baseWeight. Later: congestion / closures can plug in here.
+ * Congestion / closures plug in via implementations.
  */
 @FunctionalInterface
 public interface EdgeCost {
+
+    /** Sentinel for closed / forbidden edges. */
+    int CLOSED = 1_000_000;
 
     int cost(Edge edge);
 

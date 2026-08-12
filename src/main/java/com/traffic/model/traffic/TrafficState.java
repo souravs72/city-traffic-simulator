@@ -36,8 +36,16 @@ public final class TrafficState {
         }
     }
 
+    public static int stripeCount() {
+        return STRIPES;
+    }
+
+    public int stripeIndex(EdgeId edgeId) {
+        return Math.floorMod(edgeId.value(), STRIPES);
+    }
+
     private ReentrantLock lockFor(EdgeId edgeId) {
-        return edgeLocks[Math.floorMod(edgeId.value(), edgeLocks.length)];
+        return edgeLocks[stripeIndex(edgeId)];
     }
 
     public RoadGraph graph() {

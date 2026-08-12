@@ -24,6 +24,7 @@ public final class EditableCity {
     private final Map<NodeId, Node> nodes = new HashMap<>();
     private final Map<EdgeId, Edge> edges = new HashMap<>();
     private final Map<NodeId, List<EdgeId>> outgoing = new HashMap<>();
+    private final Map<Long, EdgeId> edgeByEndpoints = new HashMap<>();
     private final List<CityChange> pendingChanges = new ArrayList<>();
 
     private int nextNodeValue;
@@ -59,12 +60,11 @@ public final class EditableCity {
     }
 
     public Optional<Edge> findEdge(NodeId from, NodeId to) {
-        for (Edge edge : edges.values()) {
-            if (edge.from().equals(from) && edge.to().equals(to)) {
-                return Optional.of(edge);
-            }
+        EdgeId id = edgeByEndpoints.get(endpointKey(from, to));
+        if (id == null) {
+            return Optional.empty();
         }
-        return Optional.empty();
+        return Optional.ofNullable(edges.get(id));
     }
 
     /** Place an intersection (UI: click empty canvas). Auto-ids + auto label. */
@@ -139,6 +139,7 @@ public final class EditableCity {
         EdgeId id = new EdgeId(nextEdgeValue++);
         Edge edge = new Edge(id, from, to, baseWeight, capacity);
         edges.put(id, edge);
+        edgeByEndpoints.put(endpointKey(from, to), id);
         outgoing.computeIfAbsent(from, k -> new ArrayList<>()).add(id);
         version++;
         pendingChanges.add(new CityChange.EdgeAdded(edge));
@@ -150,6 +151,7 @@ public final class EditableCity {
         if (edge == null) {
             throw new IllegalArgumentException("Unknown edge: " + edgeId);
         }
+        edgeByEndpoints.remove(endpointKey(edge.from(), edge.to()));
         List<EdgeId> outs = outgoing.get(edge.from());
         if (outs != null) {
             outs.remove(edgeId);
@@ -201,5 +203,9 @@ public final class EditableCity {
             throw new IllegalArgumentException("Unknown node: " + id);
         }
         return node;
+    }
+
+    private static long endpointKey(NodeId from, NodeId to) {
+        return (((long) from.value()) << 32) | (to.value() & 0xffff_ffffL);
     }
 }

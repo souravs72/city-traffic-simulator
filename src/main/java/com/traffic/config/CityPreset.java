@@ -9,7 +9,9 @@ public enum CityPreset {
     BLANK,
     PLAYGROUND,
     DOWNTOWN,
-    MEGACITY;
+    MEGACITY,
+    /** Stylized Kolkata arterials on organic fabric. */
+    KOLKATA;
 
     public boolean isBlank() {
         return this == BLANK;
@@ -20,7 +22,7 @@ public enum CityPreset {
             case BLANK -> throw new IllegalStateException("BLANK has no grid config");
             case PLAYGROUND -> CityGenConfig.playground();
             case DOWNTOWN -> CityGenConfig.downtown();
-            case MEGACITY -> CityGenConfig.megacity();
+            case MEGACITY, KOLKATA -> CityGenConfig.megacity();
         };
     }
 
@@ -33,7 +35,7 @@ public enum CityPreset {
         return switch (this) {
             case BLANK, PLAYGROUND -> 80;
             case DOWNTOWN -> 200;
-            case MEGACITY -> 400;
+            case MEGACITY, KOLKATA -> 400;
         };
     }
 
@@ -41,7 +43,7 @@ public enum CityPreset {
         return switch (this) {
             case BLANK, PLAYGROUND -> 4;
             case DOWNTOWN -> 8;
-            case MEGACITY -> 16;
+            case MEGACITY, KOLKATA -> 16;
         };
     }
 
@@ -49,7 +51,7 @@ public enum CityPreset {
         return switch (this) {
             case BLANK, PLAYGROUND -> 200;
             case DOWNTOWN -> 500;
-            case MEGACITY -> 2000;
+            case MEGACITY, KOLKATA -> 2000;
         };
     }
 
