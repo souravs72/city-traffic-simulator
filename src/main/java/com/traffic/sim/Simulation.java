@@ -7,27 +7,31 @@ import com.traffic.model.signal.SignalNetwork;
 import com.traffic.model.traffic.TrafficState;
 import com.traffic.model.vehicle.Vehicle;
 import com.traffic.model.vehicle.VehiclePosition;
+import com.traffic.rules.Replanner;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
- * Single-threaded tick loop.
- * Phase A: advance cars already on edges.
- * Phase B: cars at nodes try to enter next edge (light + capacity + closures).
- * Phase C: advance traffic lights.
+ * Single-threaded tick loop for a fleet of cars.
+ * Phase A: advance cars on edges.
+ * Phase B: replan if next road has an ✕ accident, then try to depart (light + capacity).
+ * Phase C: advance lights + accident timers.
  */
 public final class Simulation {
 
     private final TrafficState traffic;
     private final SignalNetwork signals;
     private final List<Vehicle> vehicles;
+    private final Optional<Replanner> replanner;
     private final int expectedFuelLedger;
     private final boolean checkInvariants;
     private int tick;
+    private int totalReplans;
 
     public Simulation(TrafficState traffic, List<Vehicle> vehicles, int expectedFuelLedger) {
-        this(traffic, SignalNetwork.none(), vehicles, expectedFuelLedger, true);
+        this(traffic, SignalNetwork.none(), vehicles, expectedFuelLedger, null, true);
     }
 
     public Simulation(
@@ -36,7 +40,7 @@ public final class Simulation {
             List<Vehicle> vehicles,
             int expectedFuelLedger
     ) {
-        this(traffic, signals, vehicles, expectedFuelLedger, true);
+        this(traffic, signals, vehicles, expectedFuelLedger, null, true);
     }
 
     public Simulation(
@@ -44,14 +48,27 @@ public final class Simulation {
             SignalNetwork signals,
             List<Vehicle> vehicles,
             int expectedFuelLedger,
+            Replanner replanner
+    ) {
+        this(traffic, signals, vehicles, expectedFuelLedger, replanner, true);
+    }
+
+    public Simulation(
+            TrafficState traffic,
+            SignalNetwork signals,
+            List<Vehicle> vehicles,
+            int expectedFuelLedger,
+            Replanner replanner,
             boolean checkInvariants
     ) {
         this.traffic = Objects.requireNonNull(traffic, "traffic");
         this.signals = Objects.requireNonNull(signals, "signals");
         this.vehicles = List.copyOf(Objects.requireNonNull(vehicles, "vehicles"));
+        this.replanner = Optional.ofNullable(replanner);
         this.expectedFuelLedger = expectedFuelLedger;
         this.checkInvariants = checkInvariants;
         this.tick = 0;
+        this.totalReplans = 0;
         if (checkInvariants) {
             Invariants.checkAll(traffic, this.vehicles, expectedFuelLedger);
         }
@@ -59,6 +76,10 @@ public final class Simulation {
 
     public int tick() {
         return tick;
+    }
+
+    public int totalReplans() {
+        return totalReplans;
     }
 
     public List<Vehicle> vehicles() {
@@ -99,13 +120,18 @@ public final class Simulation {
             }
         }
 
-        // Phase B — departures (current light color applies)
+        // Phase B — replan if blocked, then departures
         for (Vehicle vehicle : vehicles) {
             if (vehicle.arrived()) {
                 continue;
             }
-            if (vehicle.position() instanceof VehiclePosition.AtNode
-                    && vehicle.hasRemainingEdges()) {
+            if (!(vehicle.position() instanceof VehiclePosition.AtNode)) {
+                continue;
+            }
+
+            maybeReplanIfNextBlocked(vehicle);
+
+            if (vehicle.hasRemainingEdges()) {
                 EdgeId next = vehicle.peekNextEdge().orElseThrow();
                 if (signals.isOpen(next) && traffic.tryEnter(next)) {
                     Edge edge = traffic.graph().requireEdge(next);
@@ -114,7 +140,7 @@ public final class Simulation {
             }
         }
 
-        // Phase C — advance lights + accident timers (✕ fades when done)
+        // Phase C — advance lights + accident timers
         signals.tick();
         traffic.tickAccidents();
 
@@ -124,7 +150,24 @@ public final class Simulation {
         }
     }
 
-    /** Run until all arrived or {@code maxTicks} reached. Returns ticks executed. */
+    private void maybeReplanIfNextBlocked(Vehicle vehicle) {
+        if (replanner.isEmpty()) {
+            return;
+        }
+        boolean needsReplan = !vehicle.hasRemainingEdges();
+        if (vehicle.hasRemainingEdges()) {
+            EdgeId next = vehicle.peekNextEdge().orElseThrow();
+            needsReplan = traffic.isClosed(next);
+        }
+        if (!needsReplan) {
+            return;
+        }
+        int before = vehicle.replanCount();
+        if (replanner.get().replan(vehicle, traffic.graph()) && vehicle.replanCount() > before) {
+            totalReplans++;
+        }
+    }
+
     public int run(int maxTicks) {
         if (maxTicks <= 0) {
             throw new IllegalArgumentException("maxTicks must be > 0");

@@ -1,30 +1,22 @@
 package com.traffic;
 
 import com.traffic.config.SimConfig;
-import com.traffic.model.graph.EdgeId;
-import com.traffic.model.graph.GraphBuilder;
-import com.traffic.model.graph.NodeId;
-import com.traffic.model.graph.RoadGraph;
-import com.traffic.model.signal.LightColor;
-import com.traffic.model.signal.SignalNetwork;
-import com.traffic.model.signal.TrafficLight;
 import com.traffic.model.traffic.Accident;
 import com.traffic.model.traffic.TrafficState;
 import com.traffic.model.vehicle.Vehicle;
-import com.traffic.model.vehicle.VehicleId;
 import com.traffic.routing.EdgeCost;
-import com.traffic.routing.Path;
-import com.traffic.routing.Router;
 import com.traffic.routing.Routers;
 import com.traffic.rules.AccidentFlavor;
 import com.traffic.rules.DynamicEdgeCost;
+import com.traffic.rules.Replanner;
+import com.traffic.sim.DemoCity;
+import com.traffic.sim.FleetFactory;
 import com.traffic.sim.Simulation;
 
 import java.util.List;
-import java.util.Set;
 
 /**
- * Playable demo entry point — tweak {@link SimConfig}, watch lights and ✕ accidents.
+ * Playable multi-car demo: lights, ✕ accidents, congestion costs, and automatic replan.
  */
 public final class Main {
 
@@ -33,89 +25,65 @@ public final class Main {
 
     public static void main(String[] args) {
         SimConfig config = SimConfig.defaults();
+        DemoCity city = new DemoCity();
+        TrafficState traffic = new TrafficState(city.graph);
+        EdgeCost cost = new DynamicEdgeCost(traffic, config.congestionPenaltyPerCar());
 
-        NodeId a = new NodeId(0);
-        NodeId b = new NodeId(1);
-        NodeId c = new NodeId(2);
-        EdgeId ab = new EdgeId(0);
-        EdgeId bc = new EdgeId(1);
-        EdgeId ac = new EdgeId(2);
-
-        RoadGraph graph = new GraphBuilder()
-                .addNode(a, "A", 0, 0)
-                .addNode(b, "B", 3, 0)
-                .addNode(c, "C", 3, 4)
-                .addEdge(ab, a, b, 3, 2)
-                .addEdge(bc, b, c, 4, 2)
-                .addEdge(ac, a, c, 10, 2)
-                .build();
-
-        TrafficState traffic = new TrafficState(graph);
-        TrafficLight light = new TrafficLight(
-                "A-out",
-                Set.of(ab, ac),
-                config.lightTiming(),
-                LightColor.GREEN
-        );
-        SignalNetwork signals = new SignalNetwork(List.of(light));
-
-        // Playful incident on the long shortcut — UI can show ✕ on edge ac
         Accident crash = traffic.reportAccident(
-                ac,
+                city.ac,
                 config.accidentDurationTicks(),
                 AccidentFlavor.randomCaption()
         );
 
-        EdgeCost cost = new DynamicEdgeCost(traffic, config.congestionPenaltyPerCar());
-        Router router = Routers.create(config.routingAlgorithm(), graph);
-        Path path = router.findPath(graph, a, c, cost)
-                .orElseThrow(() -> new IllegalStateException("No path A→C"));
+        List<Vehicle> fleet = FleetFactory.spawn(
+                city,
+                config,
+                cost,
+                FleetFactory.defaultTrips(city)
+        );
 
-        Vehicle car = new Vehicle(
-                new VehicleId(0),
-                a,
-                c,
-                config.initialFuel(),
-                path
+        Replanner replanner = new Replanner(
+                Routers.create(config.routingAlgorithm(), city.graph),
+                cost
         );
 
         Simulation sim = new Simulation(
                 traffic,
-                signals,
-                List.of(car),
-                config.initialFuel()
+                city.defaultSignals(config.lightTiming()),
+                fleet,
+                config.initialFuel(),
+                replanner
         );
 
-        System.out.println("=== City Traffic Simulator (playful demo) ===");
-        System.out.println("lights: " + config.lightTiming()
-                + " | router: " + config.routingAlgorithm()
-                + " | congestionPenalty: " + config.congestionPenaltyPerCar());
-        System.out.println("✕ accident on edge " + crash.edgeId().value()
-                + ": \"" + crash.caption() + "\" (" + crash.ticksRemaining() + " ticks)");
-        System.out.println("route hops=" + path.hopCount() + " cost=" + path.totalCost());
+        System.out.println("=== City Traffic Simulator — fleet demo ===");
+        System.out.println("cars=" + fleet.size()
+                + " | lights=" + config.lightTiming()
+                + " | router=" + config.routingAlgorithm());
+        System.out.println("✕ " + crash.caption()
+                + " on edge " + crash.edgeId().value()
+                + " (" + crash.ticksRemaining() + " ticks)");
         System.out.println();
 
         int started = sim.tick();
         while (sim.tick() - started < config.maxTicks() && !sim.allArrived()) {
             sim.step();
-            if (config.verboseTickLog()) {
-                String accidents = traffic.activeAccidents().stream()
-                        .map(acc -> "✕" + acc.edgeId().value() + ":" + acc.caption()
-                                + "(" + acc.ticksRemaining() + ")")
-                        .reduce((x, y) -> x + "; " + y)
-                        .orElse("none");
+            if (config.verboseTickLog() && sim.tick() % 2 == 0) {
                 System.out.println("t=" + sim.tick()
-                        + " light=" + light.color()
-                        + "(" + light.ticksRemainingInPhase() + " left)"
-                        + " arrived=" + car.arrived()
-                        + " accidents=[" + accidents + "]");
+                        + " arrived=" + sim.arrivedCount() + "/" + fleet.size()
+                        + " replans=" + sim.totalReplans()
+                        + " ✕=" + traffic.activeAccidents().size());
             }
         }
 
         System.out.println();
         System.out.println("done: steps=" + (sim.tick() - started)
-                + " arrived=" + car.arrived()
-                + " fuelLeft=" + car.fuel()
-                + " burned=" + car.fuelBurned());
+                + " arrived=" + sim.arrivedCount() + "/" + fleet.size()
+                + " totalReplans=" + sim.totalReplans());
+        for (Vehicle car : fleet) {
+            System.out.println("  car#" + car.id().value()
+                    + " arrived=" + car.arrived()
+                    + " replans=" + car.replanCount()
+                    + " fuelLeft=" + car.fuel());
+        }
     }
 }

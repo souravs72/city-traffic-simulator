@@ -23,6 +23,7 @@ public final class Vehicle {
     private VehiclePosition position;
     private final Deque<EdgeId> remainingEdges = new ArrayDeque<>();
     private boolean arrived;
+    private int replanCount;
 
     public Vehicle(VehicleId id, NodeId start, NodeId destination, int initialFuel, Path path) {
         this.id = Objects.requireNonNull(id, "id");
@@ -37,6 +38,7 @@ public final class Vehicle {
         this.position = new VehiclePosition.AtNode(start);
         this.remainingEdges.addAll(path.edges());
         this.arrived = start.equals(destination) && path.isEmpty();
+        this.replanCount = 0;
     }
 
     public VehicleId id() {
@@ -68,12 +70,40 @@ public final class Vehicle {
         return arrived;
     }
 
+    public int replanCount() {
+        return replanCount;
+    }
+
     public boolean hasRemainingEdges() {
         return !remainingEdges.isEmpty();
     }
 
     public Optional<EdgeId> peekNextEdge() {
         return Optional.ofNullable(remainingEdges.peekFirst());
+    }
+
+    public Optional<NodeId> currentNode() {
+        if (position instanceof VehiclePosition.AtNode at) {
+            return Optional.of(at.node());
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Swap the remaining itinerary (used after an accident blocks the old plan).
+     * Only legal while sitting at a node.
+     */
+    public void replaceRemainingPath(Path path) {
+        Objects.requireNonNull(path, "path");
+        if (!(position instanceof VehiclePosition.AtNode at)) {
+            throw new IllegalStateException("Can only replan while at a node");
+        }
+        remainingEdges.clear();
+        remainingEdges.addAll(path.edges());
+        replanCount++;
+        if (at.node().equals(destination) && remainingEdges.isEmpty()) {
+            arrived = true;
+        }
     }
 
     public void enterEdge(EdgeId edge, int travelTicks) {
