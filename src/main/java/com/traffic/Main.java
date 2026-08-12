@@ -8,6 +8,7 @@ import com.traffic.model.graph.RoadGraph;
 import com.traffic.model.signal.LightColor;
 import com.traffic.model.signal.SignalNetwork;
 import com.traffic.model.signal.TrafficLight;
+import com.traffic.model.traffic.Accident;
 import com.traffic.model.traffic.TrafficState;
 import com.traffic.model.vehicle.Vehicle;
 import com.traffic.model.vehicle.VehicleId;
@@ -15,6 +16,7 @@ import com.traffic.routing.EdgeCost;
 import com.traffic.routing.Path;
 import com.traffic.routing.Router;
 import com.traffic.routing.Routers;
+import com.traffic.rules.AccidentFlavor;
 import com.traffic.rules.DynamicEdgeCost;
 import com.traffic.sim.Simulation;
 
@@ -22,7 +24,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Entry point. Wires config → map → signals → route → single-threaded sim.
+ * Playable demo entry point — tweak {@link SimConfig}, watch lights and ✕ accidents.
  */
 public final class Main {
 
@@ -49,11 +51,22 @@ public final class Main {
                 .build();
 
         TrafficState traffic = new TrafficState(graph);
-        SignalNetwork signals = new SignalNetwork(List.of(
-                new TrafficLight("A-out", Set.of(ab, ac), 4, 2, LightColor.GREEN)
-        ));
+        TrafficLight light = new TrafficLight(
+                "A-out",
+                Set.of(ab, ac),
+                config.lightTiming(),
+                LightColor.GREEN
+        );
+        SignalNetwork signals = new SignalNetwork(List.of(light));
 
-        EdgeCost cost = new DynamicEdgeCost(traffic, 2);
+        // Playful incident on the long shortcut — UI can show ✕ on edge ac
+        Accident crash = traffic.reportAccident(
+                ac,
+                config.accidentDurationTicks(),
+                AccidentFlavor.randomCaption()
+        );
+
+        EdgeCost cost = new DynamicEdgeCost(traffic, config.congestionPenaltyPerCar());
         Router router = Routers.create(config.routingAlgorithm(), graph);
         Path path = router.findPath(graph, a, c, cost)
                 .orElseThrow(() -> new IllegalStateException("No path A→C"));
@@ -72,12 +85,35 @@ public final class Main {
                 List.of(car),
                 config.initialFuel()
         );
-        int steps = sim.run(config.maxTicks());
 
-        System.out.println("algorithm=" + config.routingAlgorithm()
-                + " pathCost=" + path.totalCost()
-                + " hops=" + path.hopCount()
-                + " steps=" + steps
+        System.out.println("=== City Traffic Simulator (playful demo) ===");
+        System.out.println("lights: " + config.lightTiming()
+                + " | router: " + config.routingAlgorithm()
+                + " | congestionPenalty: " + config.congestionPenaltyPerCar());
+        System.out.println("✕ accident on edge " + crash.edgeId().value()
+                + ": \"" + crash.caption() + "\" (" + crash.ticksRemaining() + " ticks)");
+        System.out.println("route hops=" + path.hopCount() + " cost=" + path.totalCost());
+        System.out.println();
+
+        int started = sim.tick();
+        while (sim.tick() - started < config.maxTicks() && !sim.allArrived()) {
+            sim.step();
+            if (config.verboseTickLog()) {
+                String accidents = traffic.activeAccidents().stream()
+                        .map(acc -> "✕" + acc.edgeId().value() + ":" + acc.caption()
+                                + "(" + acc.ticksRemaining() + ")")
+                        .reduce((x, y) -> x + "; " + y)
+                        .orElse("none");
+                System.out.println("t=" + sim.tick()
+                        + " light=" + light.color()
+                        + "(" + light.ticksRemainingInPhase() + " left)"
+                        + " arrived=" + car.arrived()
+                        + " accidents=[" + accidents + "]");
+            }
+        }
+
+        System.out.println();
+        System.out.println("done: steps=" + (sim.tick() - started)
                 + " arrived=" + car.arrived()
                 + " fuelLeft=" + car.fuel()
                 + " burned=" + car.fuelBurned());

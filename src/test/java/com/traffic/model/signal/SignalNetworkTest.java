@@ -14,15 +14,38 @@ import org.junit.jupiter.api.Test;
 class SignalNetworkTest {
 
     @Test
-    void redBlocksThenGreenAllows() {
+    void cyclesGreenYellowRedAndOnlyGreenAllowsEntry() {
         EdgeId edge = new EdgeId(0);
         TrafficLight light = new TrafficLight(
                 "A",
                 Set.of(edge),
-                2,
-                2,
-                LightColor.RED
+                1,
+                1,
+                1,
+                LightColor.GREEN
         );
+        SignalNetwork network = new SignalNetwork(List.of(light));
+
+        assertTrue(network.isOpen(edge));
+        assertEquals(LightColor.GREEN, light.color());
+
+        light.tick();
+        assertEquals(LightColor.YELLOW, light.color());
+        assertFalse(network.isOpen(edge));
+
+        light.tick();
+        assertEquals(LightColor.RED, light.color());
+        assertFalse(network.isOpen(edge));
+
+        light.tick();
+        assertEquals(LightColor.GREEN, light.color());
+        assertTrue(network.isOpen(edge));
+    }
+
+    @Test
+    void redThenGreenAfterFullRedPhase() {
+        EdgeId edge = new EdgeId(0);
+        TrafficLight light = new TrafficLight("A", Set.of(edge), 2, 1, 2, LightColor.RED);
         SignalNetwork network = new SignalNetwork(List.of(light));
 
         assertFalse(network.isOpen(edge));

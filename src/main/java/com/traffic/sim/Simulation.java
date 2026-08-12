@@ -114,8 +114,9 @@ public final class Simulation {
             }
         }
 
-        // Phase C — advance lights after departures so initial GREEN is usable
+        // Phase C — advance lights + accident timers (✕ fades when done)
         signals.tick();
+        traffic.tickAccidents();
 
         tick++;
         if (checkInvariants) {

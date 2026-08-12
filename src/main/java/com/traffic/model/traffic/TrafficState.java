@@ -4,20 +4,23 @@ import com.traffic.model.graph.Edge;
 import com.traffic.model.graph.EdgeId;
 import com.traffic.model.graph.RoadGraph;
 
+import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
+import java.util.Optional;
 
 /**
- * Live occupancy and temporary closures. Topology stays in {@link RoadGraph}.
+ * Live occupancy and accidents. Topology stays in {@link RoadGraph}.
+ * UI: poll {@link #activeAccidents()} and draw a ✕ where {@link Accident#showCross()}.
  */
 public final class TrafficState {
 
     private final RoadGraph graph;
     private final Map<EdgeId, Integer> occupancy = new HashMap<>();
-    private final Set<EdgeId> closed = new HashSet<>();
+    private final Map<EdgeId, Accident> accidentsByEdge = new HashMap<>();
+    private int accidentSeq;
 
     public TrafficState(RoadGraph graph) {
         this.graph = Objects.requireNonNull(graph, "graph");
@@ -32,17 +35,69 @@ public final class TrafficState {
     }
 
     public boolean isClosed(EdgeId edgeId) {
-        return closed.contains(edgeId);
+        Accident accident = accidentsByEdge.get(edgeId);
+        return accident != null && accident.active();
     }
 
-    /** Accident / construction: edge cannot be entered until reopened. */
-    public void close(EdgeId edgeId) {
+    /**
+     * Spawn a playful incident on a road (blocks new entries until it expires or is cleared).
+     * If an accident already exists on that edge, it is replaced.
+     */
+    public Accident reportAccident(EdgeId edgeId, int durationTicks, String caption) {
         graph.requireEdge(edgeId);
-        closed.add(edgeId);
+        String id = "accident-" + (++accidentSeq);
+        Accident accident = new Accident(id, edgeId, caption, durationTicks);
+        accidentsByEdge.put(edgeId, accident);
+        return accident;
+    }
+
+    /** Clear the ✕ and reopen the road. */
+    public void clearAccident(EdgeId edgeId) {
+        accidentsByEdge.remove(edgeId);
+    }
+
+    /** @deprecated prefer {@link #reportAccident}; kept for short demos */
+    @Deprecated
+    public void close(EdgeId edgeId) {
+        reportAccident(edgeId, 10_000, "Road closed");
     }
 
     public void reopen(EdgeId edgeId) {
-        closed.remove(edgeId);
+        clearAccident(edgeId);
+    }
+
+    public Optional<Accident> accidentOn(EdgeId edgeId) {
+        Accident accident = accidentsByEdge.get(edgeId);
+        if (accident == null || !accident.active()) {
+            return Optional.empty();
+        }
+        return Optional.of(accident);
+    }
+
+    /** Snapshot for UI overlays (✕ + caption). */
+    public List<Accident> activeAccidents() {
+        List<Accident> active = new ArrayList<>();
+        for (Accident accident : accidentsByEdge.values()) {
+            if (accident.active()) {
+                active.add(accident);
+            }
+        }
+        return List.copyOf(active);
+    }
+
+    /** Count down accidents; remove finished ones so the ✕ disappears. */
+    public void tickAccidents() {
+        List<EdgeId> finished = new ArrayList<>();
+        for (var entry : accidentsByEdge.entrySet()) {
+            Accident accident = entry.getValue();
+            accident.tickDown();
+            if (!accident.active()) {
+                finished.add(entry.getKey());
+            }
+        }
+        for (EdgeId edgeId : finished) {
+            accidentsByEdge.remove(edgeId);
+        }
     }
 
     public boolean hasCapacity(EdgeId edgeId) {
@@ -54,7 +109,6 @@ public final class TrafficState {
         return !isClosed(edgeId) && hasCapacity(edgeId);
     }
 
-    /** Enter if open and under capacity. Returns false if blocked or full. */
     public boolean tryEnter(EdgeId edgeId) {
         if (!canEnter(edgeId)) {
             return false;

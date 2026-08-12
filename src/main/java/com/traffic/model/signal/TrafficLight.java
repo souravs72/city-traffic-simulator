@@ -6,23 +6,21 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * A shared resource: cycles GREEN/RED and controls a set of edges.
- * Cars may enter a controlled edge only while this light is GREEN.
+ * Shared resource: cycles {@code GREEN → YELLOW → RED → GREEN}.
+ * Only GREEN allows new cars to enter controlled edges.
  */
 public final class TrafficLight {
 
     private final String name;
     private final Set<EdgeId> controlledEdges;
-    private final int greenTicks;
-    private final int redTicks;
+    private final LightTiming timing;
     private LightColor color;
     private int ticksInPhase;
 
     public TrafficLight(
             String name,
             Set<EdgeId> controlledEdges,
-            int greenTicks,
-            int redTicks,
+            LightTiming timing,
             LightColor initialColor
     ) {
         this.name = Objects.requireNonNull(name, "name");
@@ -30,13 +28,21 @@ public final class TrafficLight {
         if (this.controlledEdges.isEmpty()) {
             throw new IllegalArgumentException("controlledEdges must not be empty");
         }
-        if (greenTicks <= 0 || redTicks <= 0) {
-            throw new IllegalArgumentException("greenTicks and redTicks must be > 0");
-        }
-        this.greenTicks = greenTicks;
-        this.redTicks = redTicks;
+        this.timing = Objects.requireNonNull(timing, "timing");
         this.color = Objects.requireNonNull(initialColor, "initialColor");
         this.ticksInPhase = 0;
+    }
+
+    /** Convenience: green / yellow / red tick counts. */
+    public TrafficLight(
+            String name,
+            Set<EdgeId> controlledEdges,
+            int greenTicks,
+            int yellowTicks,
+            int redTicks,
+            LightColor initialColor
+    ) {
+        this(name, controlledEdges, new LightTiming(greenTicks, yellowTicks, redTicks), initialColor);
     }
 
     public String name() {
@@ -47,8 +53,17 @@ public final class TrafficLight {
         return controlledEdges;
     }
 
+    public LightTiming timing() {
+        return timing;
+    }
+
     public LightColor color() {
         return color;
+    }
+
+    /** Ticks left in the current color (handy for UI progress bars). */
+    public int ticksRemainingInPhase() {
+        return Math.max(0, timing.duration(color) - ticksInPhase);
     }
 
     public boolean controls(EdgeId edgeId) {
@@ -56,16 +71,23 @@ public final class TrafficLight {
     }
 
     public boolean allows(EdgeId edgeId) {
-        return !controls(edgeId) || color == LightColor.GREEN;
+        return !controls(edgeId) || color.allowsNewEntry();
     }
 
-    /** Advance one simulation tick; may flip color when the phase duration elapses. */
+    /** Advance one tick; may change color when the phase ends. */
     public void tick() {
         ticksInPhase++;
-        int limit = color == LightColor.GREEN ? greenTicks : redTicks;
-        if (ticksInPhase >= limit) {
-            color = color == LightColor.GREEN ? LightColor.RED : LightColor.GREEN;
+        if (ticksInPhase >= timing.duration(color)) {
+            color = nextColor(color);
             ticksInPhase = 0;
         }
+    }
+
+    private static LightColor nextColor(LightColor current) {
+        return switch (current) {
+            case GREEN -> LightColor.YELLOW;
+            case YELLOW -> LightColor.RED;
+            case RED -> LightColor.GREEN;
+        };
     }
 }
