@@ -23,19 +23,19 @@ public record CityGenConfig(
         }
     }
 
-    /** Tiny sandbox (matches old demo scale). */
+    /** Tiny sandbox — larger spacing so freeform map stays readable. */
     public static CityGenConfig playground() {
-        return new CityGenConfig(3, 3, 4.0, 2, true);
+        return new CityGenConfig(3, 3, 180.0, 2, true);
     }
 
     /** Medium city for local play. */
     public static CityGenConfig downtown() {
-        return new CityGenConfig(10, 10, 3.0, 3, true);
+        return new CityGenConfig(8, 8, 100.0, 3, true);
     }
 
     /** Big graph for “wow” demos / stress tests. */
     public static CityGenConfig megacity() {
-        return new CityGenConfig(25, 25, 2.5, 4, true);
+        return new CityGenConfig(16, 16, 70.0, 4, true);
     }
 
     public int expectedNodes() {

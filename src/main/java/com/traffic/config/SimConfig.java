@@ -15,7 +15,8 @@ public record SimConfig(
         LightTiming lightTiming,
         int congestionPenaltyPerCar,
         int accidentDurationTicks,
-        boolean verboseTickLog
+        boolean verboseTickLog,
+        int parallelRoutingThreshold
 ) {
     public SimConfig {
         Objects.requireNonNull(routingAlgorithm, "routingAlgorithm");
@@ -32,8 +33,15 @@ public record SimConfig(
         if (accidentDurationTicks <= 0) {
             throw new IllegalArgumentException("accidentDurationTicks must be > 0");
         }
+        if (parallelRoutingThreshold < 0) {
+            throw new IllegalArgumentException("parallelRoutingThreshold must be >= 0");
+        }
     }
 
+    /**
+     * @param parallelRoutingThreshold fleet/trip size at which pathfinding uses the common pool;
+     *                                  {@code 0} means always parallel when there is work.
+     */
     public static SimConfig defaults() {
         return new SimConfig(
                 100,
@@ -42,8 +50,13 @@ public record SimConfig(
                 LightTiming.playful(),
                 2,
                 8,
-                true
+                true,
+                8
         );
+    }
+
+    public boolean useParallelRouting(int workItems) {
+        return workItems >= parallelRoutingThreshold;
     }
 
     public SimConfig withAlgorithm(RoutingAlgorithm algorithm) {
@@ -54,7 +67,8 @@ public record SimConfig(
                 lightTiming,
                 congestionPenaltyPerCar,
                 accidentDurationTicks,
-                verboseTickLog
+                verboseTickLog,
+                parallelRoutingThreshold
         );
     }
 
@@ -66,7 +80,21 @@ public record SimConfig(
                 timing,
                 congestionPenaltyPerCar,
                 accidentDurationTicks,
-                verboseTickLog
+                verboseTickLog,
+                parallelRoutingThreshold
+        );
+    }
+
+    public SimConfig withParallelRoutingThreshold(int threshold) {
+        return new SimConfig(
+                maxTicks,
+                initialFuel,
+                routingAlgorithm,
+                lightTiming,
+                congestionPenaltyPerCar,
+                accidentDurationTicks,
+                verboseTickLog,
+                threshold
         );
     }
 }

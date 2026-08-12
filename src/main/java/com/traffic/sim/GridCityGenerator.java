@@ -4,6 +4,7 @@ import com.traffic.config.CityGenConfig;
 import com.traffic.model.graph.EditableCity;
 import com.traffic.model.graph.Node;
 import com.traffic.model.graph.NodeId;
+import com.traffic.model.graph.RoadType;
 
 /**
  * Builds a large rectangular street grid into an {@link EditableCity}
@@ -21,8 +22,9 @@ public final class GridCityGenerator {
         for (int r = 0; r < config.rows(); r++) {
             for (int c = 0; c < config.cols(); c++) {
                 String label = streetName(r, c);
-                double x = c * config.spacing();
-                double y = r * config.spacing();
+                // Margin keeps presets away from canvas edges on the larger map.
+                double x = 80 + c * config.spacing();
+                double y = 70 + r * config.spacing();
                 grid[r][c] = city.addIntersection(x, y, label);
             }
         }
@@ -44,11 +46,38 @@ public final class GridCityGenerator {
     }
 
     private static void link(EditableCity city, NodeId a, NodeId b, CityGenConfig config) {
+        RoadType type = arterialType(city, a, b, config);
         if (config.twoWayStreets()) {
-            city.connectTwoWay(a, b, config.defaultCapacity());
+            city.connectTwoWay(a, b, type);
         } else {
-            city.connectOneWay(a, b, config.defaultCapacity());
+            city.connectOneWay(a, b, type);
         }
+    }
+
+    /** Outer ring → highway, mid city → avenue, tiny grids stay avenues. */
+    private static RoadType arterialType(EditableCity city, NodeId a, NodeId b, CityGenConfig config) {
+        if (config.rows() <= 3 && config.cols() <= 3) {
+            return RoadType.AVENUE;
+        }
+        var na = city.node(a).orElseThrow();
+        var nb = city.node(b).orElseThrow();
+        double minX = 80;
+        double minY = 70;
+        double maxX = 80 + (config.cols() - 1) * config.spacing();
+        double maxY = 70 + (config.rows() - 1) * config.spacing();
+        boolean border = near(na.x(), minX) || near(na.x(), maxX) || near(na.y(), minY) || near(na.y(), maxY)
+                || near(nb.x(), minX) || near(nb.x(), maxX) || near(nb.y(), minY) || near(nb.y(), maxY);
+        if (border) {
+            return RoadType.HIGHWAY;
+        }
+        if (config.rows() >= 12) {
+            return RoadType.AVENUE;
+        }
+        return RoadType.AVENUE;
+    }
+
+    private static boolean near(double v, double target) {
+        return Math.abs(v - target) < 1e-6;
     }
 
     /** Playful but scannable labels for big maps: R2C7, etc. */

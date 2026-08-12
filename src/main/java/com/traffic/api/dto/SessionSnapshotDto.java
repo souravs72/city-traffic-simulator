@@ -10,6 +10,7 @@ public record SessionSnapshotDto(
         int edgeCount,
         long arrivedCount,
         int fleetSize,
+        String controlPolicy,
         List<NodeDto> nodes,
         List<EdgeDto> edges,
         List<VehicleDto> vehicles,

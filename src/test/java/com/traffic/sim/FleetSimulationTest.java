@@ -35,7 +35,7 @@ class FleetSimulationTest {
                 )
         );
 
-        Replanner replanner = new Replanner(
+        Replanner replanner = Replanner.withFixedCost(
                 Routers.create(config.routingAlgorithm(), city.graph),
                 cost
         );
@@ -78,7 +78,7 @@ class FleetSimulationTest {
                 city.defaultSignals(config.lightTiming()),
                 List.of(car),
                 config.initialFuel(),
-                new Replanner(router, dynamic)
+                Replanner.withFixedCost(router, dynamic)
         );
 
         sim.run(60);

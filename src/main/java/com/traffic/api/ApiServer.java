@@ -5,8 +5,17 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.traffic.api.dto.AccidentRequest;
+import com.traffic.api.dto.AddNodeRequest;
 import com.traffic.api.dto.ConnectEdgeRequest;
 import com.traffic.api.dto.CreateSessionRequest;
+import com.traffic.api.dto.FacilityRequest;
+import com.traffic.api.dto.PolicyRequest;
+import com.traffic.api.dto.IdRequest;
+import com.traffic.api.dto.RushRequest;
+import com.traffic.api.dto.TripRequest;
+import com.traffic.api.dto.DispatchRequest;
+import com.traffic.api.dto.VipConvoyRequest;
+import com.traffic.api.dto.CompareRequest;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -28,19 +37,46 @@ public final class ApiServer {
 
     public void start() throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+        server.createContext("/", this::root);
         server.createContext("/api/health", this::health);
         server.createContext("/api/session", this::session);
+        server.createContext("/api/session/new", ex -> mutate(ex, hub::newCity));
+        server.createContext("/api/session/export", this::exportSession);
         server.createContext("/api/session/build", ex -> mutate(ex, hub::build));
         server.createContext("/api/session/play", ex -> mutate(ex, hub::play));
         server.createContext("/api/session/apply", ex -> mutate(ex, hub::apply));
         server.createContext("/api/session/step", ex -> mutate(ex, hub::step));
         server.createContext("/api/session/run", this::run);
         server.createContext("/api/city/edges", this::connectEdge);
+        server.createContext("/api/city/edges/delete", this::deleteEdge);
+        server.createContext("/api/city/nodes", this::addNode);
+        server.createContext("/api/city/facility", this::setFacility);
+        server.createContext("/api/session/policy", this::setPolicy);
+        server.createContext("/api/city/nodes/delete", this::deleteNode);
         server.createContext("/api/accidents", this::accident);
+        server.createContext("/api/fleet/trips", this::addTrip);
+        server.createContext("/api/fleet/dispatch", this::dispatch);
+        server.createContext("/api/fleet/vip-convoy", this::vipConvoy);
+        server.createContext("/api/session/compare", this::compare);
+        server.createContext("/api/city/facilities/seed", this::seedFacilities);
+        server.createContext("/api/fleet/trips/random", ex -> mutate(ex, hub::addRandomTrip));
+        server.createContext("/api/fleet/rush", this::addRush);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
         System.out.println("API listening on http://localhost:" + port);
         System.out.println("React: cd web && npm run dev  (proxies /api)");
+    }
+
+    private void root(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        // UI is Vite on :5173; this port is JSON API only.
+        writeJson(ex, 200, Map.of(
+                "service", "city-traffic-simulator-api",
+                "health", "/api/health",
+                "ui", "cd web && npm run dev → http://localhost:5173"
+        ));
     }
 
     private void health(HttpExchange ex) throws IOException {
@@ -56,18 +92,37 @@ public final class ApiServer {
         }
         try {
             if ("GET".equalsIgnoreCase(ex.getRequestMethod())) {
+                if (!hub.hasSession()) {
+                    writeJson(ex, 404, Map.of("error", "No saved city"));
+                    return;
+                }
                 writeJson(ex, 200, hub.snapshot());
                 return;
             }
             if ("POST".equalsIgnoreCase(ex.getRequestMethod())) {
                 CreateSessionRequest req = readJson(ex, CreateSessionRequest.class);
                 if (req == null) {
-                    req = new CreateSessionRequest(8, 8, 8, 42L, 200, 300);
+                    req = new CreateSessionRequest("BLANK", 0, 0, 0, 42L, 0, 300, true);
                 }
                 writeJson(ex, 200, hub.create(req));
                 return;
             }
             writeJson(ex, 405, Map.of("error", "Method not allowed"));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void exportSession(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+                writeJson(ex, 405, Map.of("error", "GET required"));
+                return;
+            }
+            writeJson(ex, 200, hub.exportBlueprint());
         } catch (Exception e) {
             writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
         }
@@ -104,6 +159,72 @@ public final class ApiServer {
         }
     }
 
+
+    private void setFacility(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            FacilityRequest req = readJson(ex, FacilityRequest.class);
+            writeJson(ex, 200, hub.setFacility(req));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void setPolicy(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            PolicyRequest req = readJson(ex, PolicyRequest.class);
+            writeJson(ex, 200, hub.setPolicy(req));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void addNode(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            AddNodeRequest req = readJson(ex, AddNodeRequest.class);
+            writeJson(ex, 200, hub.addNode(req));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void deleteNode(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            IdRequest req = readJson(ex, IdRequest.class);
+            writeJson(ex, 200, hub.removeNode(req));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void deleteEdge(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            IdRequest req = readJson(ex, IdRequest.class);
+            writeJson(ex, 200, hub.removeEdge(req));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
     private void accident(HttpExchange ex) throws IOException {
         if (corsPreflight(ex)) {
             return;
@@ -112,6 +233,94 @@ public final class ApiServer {
             requirePost(ex);
             AccidentRequest req = readJson(ex, AccidentRequest.class);
             writeJson(ex, 200, hub.accident(req));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void dispatch(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            DispatchRequest req = readJson(ex, DispatchRequest.class);
+            writeJson(ex, 200, hub.dispatch(req));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void vipConvoy(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            VipConvoyRequest req = readJson(ex, VipConvoyRequest.class);
+            writeJson(ex, 200, hub.vipConvoy(req));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void compare(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            CompareRequest req = readJson(ex, CompareRequest.class);
+            if (req == null) {
+                req = new CompareRequest(80);
+            }
+            writeJson(ex, 200, hub.compare(req));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void seedFacilities(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            writeJson(ex, 200, hub.seedFacilities());
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void addTrip(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            TripRequest req = readJson(ex, TripRequest.class);
+            writeJson(ex, 200, hub.addTrip(req));
+        } catch (Exception e) {
+            writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
+        }
+    }
+
+    private void addRush(HttpExchange ex) throws IOException {
+        if (corsPreflight(ex)) {
+            return;
+        }
+        try {
+            requirePost(ex);
+            RushRequest req;
+            try {
+                req = readJson(ex, RushRequest.class);
+            } catch (Exception ignored) {
+                req = new RushRequest(8);
+            }
+            if (req == null) {
+                req = new RushRequest(8);
+            }
+            writeJson(ex, 200, hub.addRushHour(req));
         } catch (Exception e) {
             writeJson(ex, 400, Map.of("error", e.getMessage() == null ? "error" : e.getMessage()));
         }

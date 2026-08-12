@@ -10,35 +10,42 @@ import com.traffic.routing.Router;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Function;
 
 /**
- * When the planned next road is blocked (accident ✕), compute a new path from here.
+ * When the planned next road is blocked (accident ✕ / priority corridor), compute a new path.
  */
 public final class Replanner {
 
     private final Router router;
-    private final EdgeCost cost;
+    private final Function<Vehicle, EdgeCost> costFor;
 
-    public Replanner(Router router, EdgeCost cost) {
-        this.router = Objects.requireNonNull(router, "router");
-        this.cost = Objects.requireNonNull(cost, "cost");
+    public static Replanner withFixedCost(Router router, EdgeCost cost) {
+        Objects.requireNonNull(cost, "cost");
+        Function<Vehicle, EdgeCost> fixed = (Vehicle vehicle) -> cost;
+        return new Replanner(router, fixed);
     }
 
-    /**
-     * Replace the vehicle's remaining route if a path exists.
-     * @return true if the route changed
-     */
-    public boolean replan(Vehicle vehicle, RoadGraph graph) {
+    public Replanner(Router router, Function<Vehicle, EdgeCost> costFor) {
+        this.router = Objects.requireNonNull(router, "router");
+        this.costFor = Objects.requireNonNull(costFor, "costFor");
+    }
+
+    public Optional<Path> computePath(Vehicle vehicle, RoadGraph graph) {
         Objects.requireNonNull(vehicle, "vehicle");
         Objects.requireNonNull(graph, "graph");
         if (vehicle.arrived()) {
-            return false;
+            return Optional.empty();
         }
         if (!(vehicle.position() instanceof VehiclePosition.AtNode at)) {
-            return false;
+            return Optional.empty();
         }
         NodeId here = at.node();
-        Optional<Path> path = router.findPath(graph, here, vehicle.destination(), cost);
+        return router.findPath(graph, here, vehicle.destination(), costFor.apply(vehicle));
+    }
+
+    public boolean replan(Vehicle vehicle, RoadGraph graph) {
+        Optional<Path> path = computePath(vehicle, graph);
         if (path.isEmpty()) {
             return false;
         }

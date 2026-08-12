@@ -18,11 +18,15 @@ public final class GraphBuilder {
     }
 
     public GraphBuilder addNode(NodeId id, String label, double x, double y) {
+        return addNode(id, label, x, y, FacilityKind.NONE);
+    }
+
+    public GraphBuilder addNode(NodeId id, String label, double x, double y, FacilityKind facility) {
         Objects.requireNonNull(id, "id");
         if (nodes.containsKey(id)) {
             throw new IllegalArgumentException("Duplicate node: " + id);
         }
-        nodes.put(id, new Node(id, label, x, y));
+        nodes.put(id, new Node(id, label, x, y, facility));
         outgoingEdges.putIfAbsent(id, new ArrayList<>());
         return this;
     }

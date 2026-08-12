@@ -16,7 +16,7 @@ class EditableCityTest {
         Node b = city.addIntersection(5, 0, "Market");
         Edge road = city.connectOneWay(a.id(), b.id(), 3);
 
-        assertEquals(5, road.baseWeight());
+        assertEquals(1, road.baseWeight());
         assertEquals(2, city.nodeCount());
         assertEquals(1, city.edgeCount());
 

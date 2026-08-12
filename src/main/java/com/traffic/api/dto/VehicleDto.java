@@ -2,6 +2,8 @@ package com.traffic.api.dto;
 
 public record VehicleDto(
         int id,
+        String name,
+        int origin,
         int destination,
         int fuel,
         int fuelBurned,
@@ -10,6 +12,15 @@ public record VehicleDto(
         String positionType,
         Integer nodeId,
         Integer edgeId,
-        Integer ticksRemaining
+        Integer ticksRemaining,
+        int plannedShortestTicks,
+        int plannedLiveTicks,
+        int spawnedAtTick,
+        Integer arrivedAtTick,
+        Integer actualTicks,
+        Integer remainingShortestEta,
+        Integer remainingLiveEta,
+        String serviceClass,
+        int scheduledDepartAtTick
 ) {
 }

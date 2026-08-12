@@ -24,7 +24,8 @@ public final class Main {
                 com.traffic.model.signal.LightTiming.playful(),
                 2,
                 8,
-                true
+                true,
+                8
         );
         CitySession session = CitySession.openGrid(
                 config,
@@ -45,7 +46,7 @@ public final class Main {
                 .findFirst()
                 .orElseThrow();
         Node far = session.city().nodes().stream()
-                .filter(n -> n.label().equals("R9C9"))
+                .filter(n -> n.label().equals("R7C7"))
                 .findFirst()
                 .orElseThrow();
         session.city().connectOneWay(corner.id(), far.id(), 4);

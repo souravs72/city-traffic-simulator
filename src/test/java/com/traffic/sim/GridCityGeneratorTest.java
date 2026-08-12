@@ -29,7 +29,7 @@ class GridCityGeneratorTest {
     @Test
     void downtownIsRoutableCornerToCorner() {
         EditableCity city = GridCityGenerator.generate(CityGenConfig.downtown());
-        assertEquals(100, city.nodeCount());
+        assertEquals(64, city.nodeCount());
 
         RoadGraph graph = city.snapshot();
         Node start = city.nodes().stream()
@@ -37,7 +37,7 @@ class GridCityGeneratorTest {
                 .findFirst()
                 .orElseThrow();
         Node goal = city.nodes().stream()
-                .filter(n -> n.label().equals("R9C9"))
+                .filter(n -> n.label().equals("R7C7"))
                 .findFirst()
                 .orElseThrow();
 

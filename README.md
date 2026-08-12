@@ -19,6 +19,9 @@ and correctness invariants.
 - Congestion changes edge costs; lights and accidents alter access
 - Invariants: edge capacity never exceeded; fuel ledger conserved
 - Big editable grids; BUILD draws roads, PLAY runs traffic; accidents show ✕
+- Parallel pathfinding for larger fleets; per-edge lock striping on occupancy
+- UI presets: Playground / Downtown / Megacity
+- Auto traffic lights on grids; click roads to select and spawn ✕ accidents
 
 ## Architecture (packages)
 

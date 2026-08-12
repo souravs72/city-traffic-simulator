@@ -73,8 +73,12 @@ public final class EditableCity {
     }
 
     public Node addIntersection(double x, double y, String label) {
+        return addIntersection(x, y, label, FacilityKind.NONE);
+    }
+
+    public Node addIntersection(double x, double y, String label, FacilityKind facility) {
         NodeId id = new NodeId(nextNodeValue++);
-        Node node = new Node(id, label, x, y);
+        Node node = new Node(id, label, x, y, facility == null ? FacilityKind.NONE : facility);
         nodes.put(id, node);
         outgoing.put(id, new ArrayList<>());
         version++;
@@ -82,27 +86,50 @@ public final class EditableCity {
         return node;
     }
 
+    /** Designate (or clear) a facility on an existing intersection. */
+    public Node setFacility(NodeId nodeId, FacilityKind facility) {
+        Node existing = requireNode(nodeId);
+        FacilityKind kind = facility == null ? FacilityKind.NONE : facility;
+        Node updated = new Node(existing.id(), existing.label(), existing.x(), existing.y(), kind);
+        nodes.put(nodeId, updated);
+        version++;
+        return updated;
+    }
+
     /**
      * Draw a one-way street. Weight defaults from distance so long roads "feel" longer.
      * UI: drag from → to.
      */
     public Edge connectOneWay(NodeId from, NodeId to, int capacity) {
-        Node a = requireNode(from);
-        Node b = requireNode(to);
+        return connectOneWay(from, to, RoadType.AVENUE.travelTicks(), capacity);
+    }
+
+    public Edge connectOneWay(NodeId from, NodeId to, RoadType roadType) {
+        Objects.requireNonNull(roadType, "roadType");
+        return connectOneWay(from, to, roadType.travelTicks(), roadType.capacity());
+    }
+
+    public Edge connectOneWay(NodeId from, NodeId to, int baseWeight, int capacity) {
+        requireNode(from);
+        requireNode(to);
         if (from.equals(to)) {
             throw new IllegalArgumentException("Cannot connect a node to itself");
         }
         if (findEdge(from, to).isPresent()) {
             throw new IllegalArgumentException("Road already exists " + from + "→" + to);
         }
-        int weight = Math.max(1, (int) Math.round(Math.hypot(a.x() - b.x(), a.y() - b.y())));
-        return addEdgeExplicit(from, to, weight, capacity);
+        return addEdgeExplicit(from, to, baseWeight, capacity);
     }
 
     /** Two-way boulevard (UI: shift-drag or "two-way" toggle). */
     public List<Edge> connectTwoWay(NodeId from, NodeId to, int capacity) {
-        Edge forward = connectOneWay(from, to, capacity);
-        Edge back = connectOneWay(to, from, capacity);
+        return connectTwoWay(from, to, RoadType.AVENUE);
+    }
+
+    public List<Edge> connectTwoWay(NodeId from, NodeId to, RoadType roadType) {
+        Objects.requireNonNull(roadType, "roadType");
+        Edge forward = connectOneWay(from, to, roadType);
+        Edge back = connectOneWay(to, from, roadType);
         return List.of(forward, back);
     }
 
@@ -153,7 +180,7 @@ public final class EditableCity {
     public RoadGraph snapshot() {
         GraphBuilder builder = new GraphBuilder();
         for (Node node : nodes.values()) {
-            builder.addNode(node.id(), node.label(), node.x(), node.y());
+            builder.addNode(node.id(), node.label(), node.x(), node.y(), node.facility());
         }
         for (Edge edge : edges.values()) {
             builder.addEdge(edge.id(), edge.from(), edge.to(), edge.baseWeight(), edge.capacity());

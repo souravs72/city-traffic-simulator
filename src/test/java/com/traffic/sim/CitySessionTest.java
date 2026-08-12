@@ -47,7 +47,8 @@ class CitySessionTest {
                 LightTiming.playful(),
                 2,
                 8,
-                false
+                false,
+                8
         );
         CitySession session = CitySession.openGrid(
                 config,

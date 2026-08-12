@@ -6,8 +6,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Shared resource: cycles {@code GREEN → YELLOW → RED → GREEN}.
- * Only GREEN allows new cars to enter controlled edges.
+ * Shared resource at an intersection approach.
+ * Live sims use {@link SignalNetwork} FlowGuard control — not blind fixed cycles.
  */
 public final class TrafficLight {
 
@@ -16,6 +16,8 @@ public final class TrafficLight {
     private final LightTiming timing;
     private LightColor color;
     private int ticksInPhase;
+    /** Continuous ticks spent not green (red/yellow) — used for starvation bounds. */
+    private int ticksDenied;
 
     public TrafficLight(
             String name,
@@ -31,9 +33,9 @@ public final class TrafficLight {
         this.timing = Objects.requireNonNull(timing, "timing");
         this.color = Objects.requireNonNull(initialColor, "initialColor");
         this.ticksInPhase = 0;
+        this.ticksDenied = initialColor == LightColor.GREEN ? 0 : 1;
     }
 
-    /** Convenience: green / yellow / red tick counts. */
     public TrafficLight(
             String name,
             Set<EdgeId> controlledEdges,
@@ -61,7 +63,14 @@ public final class TrafficLight {
         return color;
     }
 
-    /** Ticks left in the current color (handy for UI progress bars). */
+    public int ticksInPhase() {
+        return ticksInPhase;
+    }
+
+    public int ticksDenied() {
+        return ticksDenied;
+    }
+
     public int ticksRemainingInPhase() {
         return Math.max(0, timing.duration(color) - ticksInPhase);
     }
@@ -74,13 +83,71 @@ public final class TrafficLight {
         return !controls(edgeId) || color.allowsNewEntry();
     }
 
-    /** Advance one tick; may change color when the phase ends. */
     public void tick() {
         ticksInPhase++;
+        if (color != LightColor.GREEN) {
+            ticksDenied++;
+        }
         if (ticksInPhase >= timing.duration(color)) {
             color = nextColor(color);
             ticksInPhase = 0;
+            if (color == LightColor.GREEN) {
+                ticksDenied = 0;
+            }
         }
+    }
+
+    public void forceGreen() {
+        color = LightColor.GREEN;
+        ticksInPhase = 0;
+        ticksDenied = 0;
+    }
+
+    public void forceRed() {
+        if (color == LightColor.GREEN) {
+            ticksDenied = 0;
+        }
+        color = LightColor.RED;
+        ticksInPhase = 0;
+        ticksDenied++;
+    }
+
+    public void beginYellow() {
+        color = LightColor.YELLOW;
+        ticksInPhase = 0;
+        ticksDenied++;
+    }
+
+    public void holdGreen() {
+        if (color != LightColor.GREEN) {
+            forceGreen();
+            return;
+        }
+        ticksInPhase++;
+        ticksDenied = 0;
+    }
+
+    public boolean advanceClearance() {
+        if (color != LightColor.YELLOW) {
+            return color == LightColor.RED;
+        }
+        ticksInPhase++;
+        ticksDenied++;
+        if (ticksInPhase >= timing.yellowTicks()) {
+            color = LightColor.RED;
+            ticksInPhase = 0;
+            return true;
+        }
+        return false;
+    }
+
+    public int minGreenTicks() {
+        return Math.max(1, Math.min(2, timing.greenTicks()));
+    }
+
+    /** Max time an approach with demand may stay denied before a forced handoff. */
+    public int starvationTicks() {
+        return Math.max(6, timing.greenTicks() * 2 + timing.yellowTicks());
     }
 
     private static LightColor nextColor(LightColor current) {

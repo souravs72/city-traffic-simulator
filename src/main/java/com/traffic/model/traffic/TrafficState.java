@@ -5,25 +5,39 @@ import com.traffic.model.graph.EdgeId;
 import com.traffic.model.graph.RoadGraph;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Live occupancy and accidents. Topology stays in {@link RoadGraph}.
+ * Per-edge lock striping keeps {@link #tryEnter}/{@link #leave} correct under
+ * concurrent readers (pathfinding) and writers (fleet departures).
  * UI: poll {@link #activeAccidents()} and draw a ✕ where {@link Accident#showCross()}.
  */
 public final class TrafficState {
 
+    private static final int STRIPES = 64;
+
     private final RoadGraph graph;
-    private final Map<EdgeId, Integer> occupancy = new HashMap<>();
-    private final Map<EdgeId, Accident> accidentsByEdge = new HashMap<>();
-    private int accidentSeq;
+    private final ConcurrentHashMap<EdgeId, Integer> occupancy = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<EdgeId, Accident> accidentsByEdge = new ConcurrentHashMap<>();
+    private final ReentrantLock[] edgeLocks;
+    private final AtomicInteger accidentSeq = new AtomicInteger();
 
     public TrafficState(RoadGraph graph) {
         this.graph = Objects.requireNonNull(graph, "graph");
+        this.edgeLocks = new ReentrantLock[STRIPES];
+        for (int i = 0; i < STRIPES; i++) {
+            edgeLocks[i] = new ReentrantLock();
+        }
+    }
+
+    private ReentrantLock lockFor(EdgeId edgeId) {
+        return edgeLocks[Math.floorMod(edgeId.value(), edgeLocks.length)];
     }
 
     public RoadGraph graph() {
@@ -45,15 +59,27 @@ public final class TrafficState {
      */
     public Accident reportAccident(EdgeId edgeId, int durationTicks, String caption) {
         graph.requireEdge(edgeId);
-        String id = "accident-" + (++accidentSeq);
-        Accident accident = new Accident(id, edgeId, caption, durationTicks);
-        accidentsByEdge.put(edgeId, accident);
-        return accident;
+        ReentrantLock lock = lockFor(edgeId);
+        lock.lock();
+        try {
+            String id = "accident-" + accidentSeq.incrementAndGet();
+            Accident accident = new Accident(id, edgeId, caption, durationTicks);
+            accidentsByEdge.put(edgeId, accident);
+            return accident;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /** Clear the ✕ and reopen the road. */
     public void clearAccident(EdgeId edgeId) {
-        accidentsByEdge.remove(edgeId);
+        ReentrantLock lock = lockFor(edgeId);
+        lock.lock();
+        try {
+            accidentsByEdge.remove(edgeId);
+        } finally {
+            lock.unlock();
+        }
     }
 
     /** @deprecated prefer {@link #reportAccident}; kept for short demos */
@@ -87,16 +113,21 @@ public final class TrafficState {
 
     /** Count down accidents; remove finished ones so the ✕ disappears. */
     public void tickAccidents() {
-        List<EdgeId> finished = new ArrayList<>();
-        for (var entry : accidentsByEdge.entrySet()) {
-            Accident accident = entry.getValue();
-            accident.tickDown();
-            if (!accident.active()) {
-                finished.add(entry.getKey());
+        for (EdgeId edgeId : List.copyOf(accidentsByEdge.keySet())) {
+            ReentrantLock lock = lockFor(edgeId);
+            lock.lock();
+            try {
+                Accident accident = accidentsByEdge.get(edgeId);
+                if (accident == null) {
+                    continue;
+                }
+                accident.tickDown();
+                if (!accident.active()) {
+                    accidentsByEdge.remove(edgeId);
+                }
+            } finally {
+                lock.unlock();
             }
-        }
-        for (EdgeId edgeId : finished) {
-            accidentsByEdge.remove(edgeId);
         }
     }
 
@@ -110,22 +141,34 @@ public final class TrafficState {
     }
 
     public boolean tryEnter(EdgeId edgeId) {
-        if (!canEnter(edgeId)) {
-            return false;
+        ReentrantLock lock = lockFor(edgeId);
+        lock.lock();
+        try {
+            if (!canEnter(edgeId)) {
+                return false;
+            }
+            occupancy.merge(edgeId, 1, Integer::sum);
+            return true;
+        } finally {
+            lock.unlock();
         }
-        occupancy.merge(edgeId, 1, Integer::sum);
-        return true;
     }
 
     public void leave(EdgeId edgeId) {
-        int current = occupancy(edgeId);
-        if (current <= 0) {
-            throw new IllegalStateException("Cannot leave edge with zero occupancy: " + edgeId);
-        }
-        if (current == 1) {
-            occupancy.remove(edgeId);
-        } else {
-            occupancy.put(edgeId, current - 1);
+        ReentrantLock lock = lockFor(edgeId);
+        lock.lock();
+        try {
+            int current = occupancy(edgeId);
+            if (current <= 0) {
+                throw new IllegalStateException("Cannot leave edge with zero occupancy: " + edgeId);
+            }
+            if (current == 1) {
+                occupancy.remove(edgeId);
+            } else {
+                occupancy.put(edgeId, current - 1);
+            }
+        } finally {
+            lock.unlock();
         }
     }
 }
