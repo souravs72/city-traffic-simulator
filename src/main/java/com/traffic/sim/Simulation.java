@@ -5,6 +5,7 @@ import com.traffic.model.graph.Edge;
 import com.traffic.model.graph.EdgeId;
 import com.traffic.model.priority.ControlPolicy;
 import com.traffic.model.priority.CorridorBoard;
+import com.traffic.model.priority.PriorityMechanisms;
 import com.traffic.model.signal.SignalNetwork;
 import com.traffic.model.traffic.TrafficState;
 import com.traffic.model.vehicle.ServiceClass;
@@ -40,6 +41,7 @@ public final class Simulation {
     private final Optional<Replanner> replanner;
     private final CorridorBoard corridors;
     private final ControlPolicy policy;
+    private final PriorityMechanisms mechanisms;
     private final int expectedFuelLedger;
     private final boolean checkInvariants;
     private final int parallelRoutingThreshold;
@@ -129,12 +131,31 @@ public final class Simulation {
             boolean parallelTick,
             SimExecutor executor
     ) {
+        this(traffic, signals, vehicles, expectedFuelLedger, replanner, checkInvariants,
+                parallelRoutingThreshold, corridors, policy, null, parallelTick, executor);
+    }
+
+    public Simulation(
+            TrafficState traffic,
+            SignalNetwork signals,
+            List<Vehicle> vehicles,
+            int expectedFuelLedger,
+            Replanner replanner,
+            boolean checkInvariants,
+            int parallelRoutingThreshold,
+            CorridorBoard corridors,
+            ControlPolicy policy,
+            PriorityMechanisms mechanisms,
+            boolean parallelTick,
+            SimExecutor executor
+    ) {
         this.traffic = Objects.requireNonNull(traffic, "traffic");
         this.signals = Objects.requireNonNull(signals, "signals");
         this.vehicles = List.copyOf(Objects.requireNonNull(vehicles, "vehicles"));
         this.replanner = Optional.ofNullable(replanner);
         this.corridors = corridors == null ? new CorridorBoard() : corridors;
         this.policy = policy == null ? ControlPolicy.CITY_FLOW : policy;
+        this.mechanisms = mechanisms == null ? this.policy.mechanisms() : mechanisms;
         this.expectedFuelLedger = expectedFuelLedger;
         this.checkInvariants = checkInvariants;
         if (parallelRoutingThreshold < 0) {
@@ -191,6 +212,10 @@ public final class Simulation {
         return policy;
     }
 
+    public PriorityMechanisms mechanisms() {
+        return mechanisms;
+    }
+
     public boolean allArrived() {
         for (Vehicle v : vehicles) {
             if (!v.arrived()) {
@@ -235,12 +260,12 @@ public final class Simulation {
 
         Map<EdgeId, Integer> waiting = waitingForSignals();
         Map<EdgeId, Integer> ages = waitAgeByEdge();
-        Map<EdgeId, Integer> priority = policy.honorPriority() ? priorityByEdge() : Map.of();
+        Map<EdgeId, Integer> priority = mechanisms.signalPreemption() ? priorityByEdge() : Map.of();
         signals.tick(traffic, waiting, ages, priority);
 
         replanBlocked(atNodes);
 
-        Map<EdgeId, Integer> highestWaitingRank = policy.honorPriority()
+        Map<EdgeId, Integer> highestWaitingRank = mechanisms.priorityDeparture()
                 ? ParallelTickEngine.highestWaitingRanks(atNodes, tick)
                 : Map.of();
 
@@ -250,7 +275,7 @@ public final class Simulation {
                     atNodes,
                     traffic,
                     corridors,
-                    policy,
+                    mechanisms,
                     tick,
                     waitTicksByVehicle,
                     highestWaitingRank,
@@ -258,7 +283,7 @@ public final class Simulation {
             );
         } else {
             List<Vehicle> departOrder = new ArrayList<>(atNodes);
-            if (policy.honorPriority()) {
+            if (mechanisms.priorityDeparture()) {
                 departOrder.sort(Comparator
                         .comparingInt((Vehicle v) -> v.serviceClass().rank()).reversed()
                         .thenComparingInt(v -> -waitTicksByVehicle.getOrDefault(v.id(), 0))
@@ -269,10 +294,10 @@ public final class Simulation {
                     continue;
                 }
                 EdgeId next = vehicle.peekNextEdge().orElseThrow();
-                if (policy.honorPriority() && corridors.blocks(next, vehicle.serviceClass())) {
+                if (mechanisms.corridorBlocking() && corridors.blocks(next, vehicle.serviceClass())) {
                     continue;
                 }
-                if (policy.honorPriority()) {
+                if (mechanisms.priorityDeparture()) {
                     int heldFor = highestWaitingRank.getOrDefault(next, 0);
                     if (vehicle.serviceClass().rank() < heldFor) {
                         continue;
@@ -397,7 +422,7 @@ public final class Simulation {
     }
 
     private boolean signalAllows(Vehicle vehicle, EdgeId next) {
-        if (!policy.honorPriority()) {
+        if (!mechanisms.signalPreemption()) {
             return signals.isOpen(next);
         }
         return signals.allowsEntry(next, vehicle.serviceClass().rank());
@@ -411,7 +436,7 @@ public final class Simulation {
         if (traffic.isClosed(next)) {
             return true;
         }
-        if (!policy.honorPriority()) {
+        if (!mechanisms.corridorBlocking()) {
             return false;
         }
         return corridors.pathBlocked(vehicle.remainingEdgesView(), vehicle.serviceClass())

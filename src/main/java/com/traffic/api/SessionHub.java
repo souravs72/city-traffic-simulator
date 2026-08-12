@@ -28,8 +28,8 @@ import com.traffic.model.priority.ControlPolicy;
 import com.traffic.persist.CityStore;
 import com.traffic.routing.RoutingAlgorithm;
 import com.traffic.rules.AccidentFlavor;
+import com.traffic.eval.PolicyArena;
 import com.traffic.sim.CitySession;
-import com.traffic.sim.PolicyArena;
 import com.traffic.sim.SessionMode;
 
 import java.nio.file.Path;

@@ -11,6 +11,7 @@ import com.traffic.model.graph.NodeId;
 import com.traffic.model.graph.RoadGraph;
 import com.traffic.model.priority.ControlPolicy;
 import com.traffic.model.priority.CorridorBoard;
+import com.traffic.model.priority.PriorityMechanisms;
 import com.traffic.model.priority.VipLockdown;
 import com.traffic.model.signal.SignalNetwork;
 import com.traffic.model.traffic.TrafficState;
@@ -53,6 +54,10 @@ public final class CitySession {
     private Replanner replanner;
     private final CorridorBoard corridors = new CorridorBoard();
     private ControlPolicy controlPolicy = ControlPolicy.CITY_FLOW;
+    private PriorityMechanisms mechanisms = PriorityMechanisms.full();
+    private boolean forceSerialTick;
+    private boolean forceParallelTick;
+    private SignalNetwork.ControlMode signalControlMode = SignalNetwork.ControlMode.FLOW_GUARD;
     private int worldTick;
     private int mapVersionApplied;
     private final java.util.concurrent.atomic.AtomicInteger corridorSeq = new java.util.concurrent.atomic.AtomicInteger();
@@ -158,8 +163,60 @@ public final class CitySession {
         return controlPolicy;
     }
 
+    public PriorityMechanisms mechanisms() {
+        return mechanisms;
+    }
+
     public void setControlPolicy(ControlPolicy policy) {
         this.controlPolicy = policy == null ? ControlPolicy.CITY_FLOW : policy;
+        this.mechanisms = this.controlPolicy.mechanisms();
+        if (simulation != null) {
+            rebuildSimulation();
+        }
+    }
+
+    /**
+     * Override mechanism flags for ablation without changing the UI policy label.
+     * Pass null to reset from {@link #controlPolicy()}.
+     */
+    public void setMechanisms(PriorityMechanisms mechanisms) {
+        this.mechanisms = mechanisms == null ? controlPolicy.mechanisms() : mechanisms;
+        if (simulation != null) {
+            rebuildSimulation();
+        }
+    }
+
+    /** When true, ticks run serially (eval / determinism). */
+    public void setForceSerialTick(boolean forceSerialTick) {
+        this.forceSerialTick = forceSerialTick;
+        if (forceSerialTick) {
+            this.forceParallelTick = false;
+        }
+        if (simulation != null) {
+            rebuildSimulation();
+        }
+    }
+
+    /** When true, force parallel tick (tests). Ignored if {@link #setForceSerialTick(boolean)} is on. */
+    public void setForceParallelTick(boolean forceParallelTick) {
+        this.forceParallelTick = forceParallelTick;
+        if (forceParallelTick) {
+            this.forceSerialTick = false;
+        }
+        if (simulation != null) {
+            rebuildSimulation();
+        }
+    }
+
+    public SignalNetwork.ControlMode signalControlMode() {
+        return signalControlMode;
+    }
+
+    public void setSignalControlMode(SignalNetwork.ControlMode mode) {
+        this.signalControlMode = mode == null ? SignalNetwork.ControlMode.FLOW_GUARD : mode;
+        if (signals != null && !signals.lights().isEmpty()) {
+            this.signals = signals.withMode(this.signalControlMode);
+        }
         if (simulation != null) {
             rebuildSimulation();
         }
@@ -180,6 +237,7 @@ public final class CitySession {
     public void play() {
         applyEdits();
         worldTick = 0;
+        corridors.clear();
         RoadGraph graph = traffic.graph();
         Router router = Routers.create(config.routingAlgorithm(), graph);
         for (Vehicle vehicle : fleet) {
@@ -195,7 +253,7 @@ public final class CitySession {
             // VIP corridors re-armed for race start relative to scheduled tick.
             if (vehicle.serviceClass() == ServiceClass.VIP
                     && vehicle.scheduledDepartAtTick() > 0
-                    && controlPolicy.honorPriority()) {
+                    && mechanisms.corridorBlocking()) {
                 armVipLockdown(vehicle, vehicle.scheduledDepartAtTick());
             }
         }
@@ -268,7 +326,8 @@ public final class CitySession {
                 Routers.create(config.routingAlgorithm(), fresh),
                 this::edgeCostFor
         );
-        this.signals = GridSignalPlanner.forGraph(fresh, config.lightTiming());
+        this.signals = GridSignalPlanner.forGraph(fresh, config.lightTiming())
+                .withMode(signalControlMode);
 
         List<Vehicle> needReplan = new ArrayList<>();
         for (Vehicle vehicle : fleet) {
@@ -312,7 +371,7 @@ public final class CitySession {
                 corridors,
                 vehicle.serviceClass(),
                 config.congestionPenaltyPerCar(),
-                controlPolicy.honorPriority()
+                mechanisms
         );
     }
 
@@ -364,7 +423,7 @@ public final class CitySession {
 
         Router router = Routers.create(config.routingAlgorithm(), graph);
         EdgeCost liveCost = new PriorityEdgeCost(
-                traffic, corridors, sc, config.congestionPenaltyPerCar(), controlPolicy.honorPriority());
+                traffic, corridors, sc, config.congestionPenaltyPerCar(), mechanisms);
         Path live = router.findPath(graph, from, to, liveCost).orElse(null);
         if (live == null) {
             boolean topoOk = router.findPath(graph, from, to, EdgeCost.baseWeight()).isPresent();
@@ -399,7 +458,7 @@ public final class CitySession {
                 scheduledDepartAtTick
         );
         fleet.add(car);
-        if (sc == ServiceClass.VIP && scheduledDepartAtTick > 0 && controlPolicy.honorPriority()) {
+        if (sc == ServiceClass.VIP && scheduledDepartAtTick > 0 && mechanisms.corridorBlocking()) {
             armVipLockdown(car, scheduledDepartAtTick);
         }
         rebuildSimulation();
@@ -421,12 +480,12 @@ public final class CitySession {
      * then replan civilians onto bypass routes.
      */
     public void armVipLockdown(Vehicle vip, int departAt) {
-        vipOps.armVipLockdown(traffic, controlPolicy, vip, departAt, worldTick, this::replanAroundCorridors);
+        vipOps.armVipLockdown(traffic, mechanisms, vip, departAt, worldTick, this::replanAroundCorridors);
     }
 
     /** Replan any non-emergency vehicle whose remaining path hits a hard corridor. */
     public int replanAroundCorridors() {
-        return vipOps.replanAroundCorridors(controlPolicy, replanner, fleet, traffic, corridors);
+        return vipOps.replanAroundCorridors(mechanisms, replanner, fleet, traffic, corridors);
     }
 
     /**
@@ -540,7 +599,8 @@ public final class CitySession {
     }
 
     private void rebuildSimulation() {
-        boolean parallelTick = config.parallelRoutingThreshold() >= 8;
+        boolean parallelTick = !forceSerialTick
+                && (forceParallelTick || config.parallelRoutingThreshold() >= 8);
         this.simulation = new Simulation(
                 traffic,
                 signals,
@@ -551,6 +611,7 @@ public final class CitySession {
                 config.parallelRoutingThreshold(),
                 corridors,
                 controlPolicy,
+                mechanisms,
                 parallelTick,
                 executor
         );

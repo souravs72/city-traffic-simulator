@@ -1,0 +1,36 @@
+{
+  "preset": "EVAL_EMERGENCY",
+  "schemaVersion": 1,
+  "nodes": [
+    {"id": 0, "label": "A", "x": 0, "y": 0, "facility": "HOSPITAL"},
+    {"id": 1, "label": "B", "x": 100, "y": 0, "facility": "NONE"},
+    {"id": 2, "label": "C", "x": 200, "y": 0, "facility": "NONE"},
+    {"id": 3, "label": "D", "x": 300, "y": 0, "facility": "NONE"},
+    {"id": 4, "label": "E", "x": 200, "y": 100, "facility": "NONE"},
+    {"id": 5, "label": "F", "x": 100, "y": 100, "facility": "NONE"}
+  ],
+  "edges": [
+    {"from": 0, "to": 1, "baseWeight": 4, "capacity": 2, "roadType": "AVENUE"},
+    {"from": 1, "to": 0, "baseWeight": 4, "capacity": 2, "roadType": "AVENUE"},
+    {"from": 1, "to": 2, "baseWeight": 4, "capacity": 2, "roadType": "AVENUE"},
+    {"from": 2, "to": 1, "baseWeight": 4, "capacity": 2, "roadType": "AVENUE"},
+    {"from": 2, "to": 3, "baseWeight": 4, "capacity": 2, "roadType": "AVENUE"},
+    {"from": 3, "to": 2, "baseWeight": 4, "capacity": 2, "roadType": "AVENUE"},
+    {"from": 1, "to": 5, "baseWeight": 3, "capacity": 1, "roadType": "AVENUE"},
+    {"from": 5, "to": 1, "baseWeight": 3, "capacity": 1, "roadType": "AVENUE"},
+    {"from": 5, "to": 4, "baseWeight": 3, "capacity": 1, "roadType": "AVENUE"},
+    {"from": 4, "to": 5, "baseWeight": 3, "capacity": 1, "roadType": "AVENUE"},
+    {"from": 4, "to": 2, "baseWeight": 3, "capacity": 1, "roadType": "AVENUE"},
+    {"from": 2, "to": 4, "baseWeight": 3, "capacity": 1, "roadType": "AVENUE"},
+    {"from": 4, "to": 3, "baseWeight": 4, "capacity": 1, "roadType": "AVENUE"},
+    {"from": 3, "to": 4, "baseWeight": 4, "capacity": 1, "roadType": "AVENUE"}
+  ],
+  "trips": [
+    {"from": 0, "to": 3, "name": "Ambulance-1", "serviceClass": "AMBULANCE", "scheduledDepartAtTick": 0},
+    {"from": 1, "to": 3, "name": "Civ-1", "serviceClass": "CIVILIAN", "scheduledDepartAtTick": 0},
+    {"from": 5, "to": 3, "name": "Civ-2", "serviceClass": "CIVILIAN", "scheduledDepartAtTick": 0},
+    {"from": 2, "to": 0, "name": "Civ-3", "serviceClass": "CIVILIAN", "scheduledDepartAtTick": 0},
+    {"from": 4, "to": 0, "name": "Civ-4", "serviceClass": "CIVILIAN", "scheduledDepartAtTick": 0}
+  ],
+  "accidents": []
+}

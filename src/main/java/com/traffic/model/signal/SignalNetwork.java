@@ -77,6 +77,19 @@ public final class SignalNetwork {
         return new SignalNetwork(List.of());
     }
 
+    public ControlMode mode() {
+        return mode;
+    }
+
+    /** Same topology with a different control regime (eval baselines). */
+    public SignalNetwork withMode(ControlMode next) {
+        Objects.requireNonNull(next, "next");
+        if (next == mode) {
+            return this;
+        }
+        return new SignalNetwork(lights, pairs, next);
+    }
+
     public List<TrafficLight> lights() {
         return lights;
     }

@@ -250,6 +250,10 @@ export type PolicyCompare = {
     fleetAvgTicks: number;
     arrived: number;
     stranded: number;
+    fleetP90?: number;
+    civilianP90?: number;
+    emergencyP90?: number;
+    jainCivilian?: number;
   };
   cityFlow: {
     policy: string;
@@ -258,10 +262,20 @@ export type PolicyCompare = {
     fleetAvgTicks: number;
     arrived: number;
     stranded: number;
+    fleetP90?: number;
+    civilianP90?: number;
+    emergencyP90?: number;
+    jainCivilian?: number;
   };
   cityFlowWinsEmergency: boolean;
   cityFlowCivilianFair: boolean;
   verdict: string;
+  mapsFleetP90?: number;
+  cityFlowFleetP90?: number;
+  mapsJainCivilian?: number;
+  cityFlowJainCivilian?: number;
+  cityFlowEmergencyP90?: number;
+  mapsEmergencyP90?: number;
 };
 
 export async function comparePolicies(ticks = 80): Promise<PolicyCompare> {

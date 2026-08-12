@@ -1,8 +1,8 @@
 package com.traffic.sim;
 
 import com.traffic.model.graph.EdgeId;
-import com.traffic.model.priority.ControlPolicy;
 import com.traffic.model.priority.CorridorBoard;
+import com.traffic.model.priority.PriorityMechanisms;
 import com.traffic.model.priority.VipLockdown;
 import com.traffic.model.traffic.TrafficState;
 import com.traffic.model.vehicle.ServiceClass;
@@ -26,14 +26,14 @@ public final class VipOps {
 
     public void armVipLockdown(
             TrafficState traffic,
-            ControlPolicy policy,
+            PriorityMechanisms mechanisms,
             Vehicle vip,
             int departAt,
             int worldTick,
             Runnable replanAround
     ) {
         List<EdgeId> edges = vip.remainingEdgesView();
-        if (edges.isEmpty() || !policy.honorPriority()) {
+        if (edges.isEmpty() || mechanisms == null || !mechanisms.corridorBlocking()) {
             return;
         }
         int lead = 3;
@@ -53,13 +53,13 @@ public final class VipOps {
     }
 
     public int replanAroundCorridors(
-            ControlPolicy policy,
+            PriorityMechanisms mechanisms,
             Replanner replanner,
             List<Vehicle> fleet,
             TrafficState traffic,
             CorridorBoard corridors
     ) {
-        if (!policy.honorPriority() || replanner == null) {
+        if (mechanisms == null || !mechanisms.corridorBlocking() || replanner == null) {
             return 0;
         }
         int n = 0;

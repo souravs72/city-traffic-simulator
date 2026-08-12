@@ -2,9 +2,8 @@ package com.traffic.sim.parallel;
 
 import com.traffic.model.graph.Edge;
 import com.traffic.model.graph.EdgeId;
-import com.traffic.model.priority.ControlPolicy;
 import com.traffic.model.priority.CorridorBoard;
-import com.traffic.model.signal.SignalNetwork;
+import com.traffic.model.priority.PriorityMechanisms;
 import com.traffic.model.traffic.TrafficState;
 import com.traffic.model.vehicle.Vehicle;
 import com.traffic.model.vehicle.VehicleId;
@@ -20,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiPredicate;
 
 /**
- * Parallel tick phases. Callers: Simulation.step. Instruction: implement the plan.
+ * Parallel tick phases. Callers: Simulation.step.
  */
 public final class ParallelTickEngine {
 
@@ -73,13 +72,14 @@ public final class ParallelTickEngine {
             List<Vehicle> atNodes,
             TrafficState traffic,
             CorridorBoard corridors,
-            ControlPolicy policy,
+            PriorityMechanisms mechanisms,
             int tick,
             Map<VehicleId, Integer> waitTicksByVehicle,
             Map<EdgeId, Integer> highestWaitingRank,
             BiPredicate<Vehicle, EdgeId> signalAllows
     ) {
         Objects.requireNonNull(executor, "executor");
+        PriorityMechanisms mech = Objects.requireNonNullElse(mechanisms, PriorityMechanisms.none());
         List<Vehicle> candidates = new ArrayList<>();
         for (Vehicle vehicle : atNodes) {
             if (!vehicle.mayDepartAt(tick) || !vehicle.hasRemainingEdges()) {
@@ -99,7 +99,7 @@ public final class ParallelTickEngine {
         }
 
         Comparator<Vehicle> order = Comparator
-                .comparingInt((Vehicle v) -> policy.honorPriority() ? v.serviceClass().rank() : 0)
+                .comparingInt((Vehicle v) -> mech.priorityDeparture() ? v.serviceClass().rank() : 0)
                 .reversed()
                 .thenComparingInt(v -> -waitTicksByVehicle.getOrDefault(v.id(), 0))
                 .thenComparingInt(v -> v.id().value());
@@ -109,10 +109,10 @@ public final class ParallelTickEngine {
             sorted.sort(order);
             for (Vehicle vehicle : sorted) {
                 EdgeId next = vehicle.peekNextEdge().orElseThrow();
-                if (policy.honorPriority() && corridors.blocks(next, vehicle.serviceClass())) {
+                if (mech.corridorBlocking() && corridors.blocks(next, vehicle.serviceClass())) {
                     continue;
                 }
-                if (policy.honorPriority()
+                if (mech.priorityDeparture()
                         && vehicle.serviceClass().rank() < highestWaitingRank.getOrDefault(next, 0)) {
                     continue;
                 }

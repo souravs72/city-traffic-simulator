@@ -30,6 +30,7 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -215,6 +216,12 @@ public final class ApiServer {
         body.put("workerThreads", config.workerThreads());
         body.put("maxRunTicks", config.maxRunTicks());
         body.put("authRequired", config.authRequired());
+        body.put("eval", Map.of(
+                "mechanisms", List.of(
+                        "priorityDeparture", "signalPreemption", "corridorBlocking", "softBufferRouting"),
+                "suites", List.of("default", "ablation", "signals"),
+                "docs", "docs/RESEARCH.md"
+        ));
         writeJson(ex, 200, body);
     }
 

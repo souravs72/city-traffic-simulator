@@ -16,4 +16,9 @@ public enum ControlPolicy {
     public boolean honorPriority() {
         return this == CITY_FLOW;
     }
+
+    /** Default mechanism bundle for this policy label. */
+    public PriorityMechanisms mechanisms() {
+        return PriorityMechanisms.from(this);
+    }
 }

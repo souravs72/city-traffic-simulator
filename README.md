@@ -13,7 +13,7 @@ CityFlow models intersections as nodes and roads as capacity-limited edges. Vehi
 | **CityFlow** | FIRE → AMBULANCE → POLICE → VIP → civilian; corridors, preemption, soft buffers |
 | **Maps-like** | Congestion-aware routing only — no class privilege |
 
-Compare both on the same blueprint (`Compare` in the UI).
+Compare both on the same blueprint (`Compare` in the UI). Research eval harness: [docs/RESEARCH.md](docs/RESEARCH.md).
 
 ## Run
 
@@ -27,6 +27,9 @@ cd web && npm install && npm run dev
 
 ```bash
 mvn test
+
+# Reproducible policy eval (writes results/)
+mvn -q exec:java -Dexec.mainClass=com.traffic.eval.EvalMain -Dexec.args="--suite default"
 ```
 
 **Docker (API + built UI):**
@@ -43,12 +46,13 @@ Java 17 simulation engine · React + Vite UI · JDK HTTP API · optional single-
 ## Engine notes
 
 - Dijkstra / A\* with dynamic & priority edge costs  
+- Ablatable priority stack (departure, signal, corridor, soft routing)  
 - Parallel tick (advance + stripe departures) and dedicated routing pools  
 - Lock-striped occupancy; lock-free corridor snapshots  
 - Multi-session via `X-Session-Id`  
 - Presets: Playground, Downtown, Megacity, Kolkata  
 
-Config: [`.env.example`](.env.example). Health: `GET /api/health`.
+Config: [`.env.example`](.env.example). Health: `GET /api/health`. Eval: `com.traffic.eval.EvalMain`.
 
 
 

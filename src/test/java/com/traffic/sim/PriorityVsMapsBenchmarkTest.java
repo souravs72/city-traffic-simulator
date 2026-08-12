@@ -9,6 +9,7 @@ import com.traffic.model.graph.NodeId;
 import com.traffic.model.graph.RoadGraph;
 import com.traffic.model.priority.ControlPolicy;
 import com.traffic.model.priority.CorridorBoard;
+import com.traffic.model.priority.PriorityMechanisms;
 import com.traffic.model.priority.VipLockdown;
 import com.traffic.model.signal.LightColor;
 import com.traffic.model.signal.LightTiming;
@@ -165,7 +166,7 @@ class PriorityVsMapsBenchmarkTest {
                     6
             );
             fleet.add(vip);
-            if (policy.honorPriority()) {
+            if (policy.mechanisms().corridorBlocking()) {
                 VipLockdown.Plan plan = VipLockdown.plan(
                         s.graph(), List.of(s.vipToJ(), s.spineA(), s.spineB()));
                 corridors.activate(new CorridorBoard.Corridor(
@@ -180,18 +181,18 @@ class PriorityVsMapsBenchmarkTest {
             }
         }
 
+        PriorityMechanisms mechanisms = policy.mechanisms();
         Function<Vehicle, EdgeCost> costs = (Vehicle v) -> new PriorityEdgeCost(
-                traffic, corridors, v.serviceClass(), 2, policy.honorPriority()
+                traffic, corridors, v.serviceClass(), 2, mechanisms
         );
         Replanner replanner = new Replanner(
                 Routers.create(com.traffic.routing.RoutingAlgorithm.DIJKSTRA, s.graph()),
                 costs
         );
-        // Seed civilian routes that avoid VIP corridor under CityFlow
         for (Vehicle v : fleet) {
             if (v.serviceClass() == ServiceClass.CIVILIAN) {
                 EdgeCost cost = new PriorityEdgeCost(
-                        traffic, corridors, v.serviceClass(), 2, policy.honorPriority());
+                        traffic, corridors, v.serviceClass(), 2, mechanisms);
                 Path alt = Routers.create(com.traffic.routing.RoutingAlgorithm.DIJKSTRA, s.graph())
                         .findPath(s.graph(), v.origin(), v.destination(), cost)
                         .orElse(new Path(v.remainingEdgesView(), v.remainingEdgesView().size()));
@@ -200,7 +201,8 @@ class PriorityVsMapsBenchmarkTest {
         }
 
         Simulation sim = new Simulation(
-                traffic, signals, fleet, fleet.size() * 80, replanner, false, 8, corridors, policy
+                traffic, signals, fleet, fleet.size() * 80, replanner, false, 8, corridors, policy,
+                mechanisms, false, null
         );
 
         int makespan = 0;

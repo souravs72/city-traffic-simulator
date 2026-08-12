@@ -1,8 +1,7 @@
 package com.traffic.api.dto;
 
 /**
- * Strict A/B: same city + fleet recipe under MAPS_LIKE vs CITY_FLOW.
- * Lower emergency/civilian averages are better.
+ * Strict A/B compare DTO with p90 + Jain fairness fields.
  */
 public record PolicyCompareDto(
         int ticks,
@@ -11,7 +10,13 @@ public record PolicyCompareDto(
         PolicyLegDto cityFlow,
         boolean cityFlowWinsEmergency,
         boolean cityFlowCivilianFair,
-        String verdict
+        String verdict,
+        double mapsFleetP90,
+        double cityFlowFleetP90,
+        double mapsJainCivilian,
+        double cityFlowJainCivilian,
+        double cityFlowEmergencyP90,
+        double mapsEmergencyP90
 ) {
     public record PolicyLegDto(
             String policy,
@@ -19,7 +24,11 @@ public record PolicyCompareDto(
             double civilianAvgTicks,
             double fleetAvgTicks,
             int arrived,
-            int stranded
+            int stranded,
+            double fleetP90,
+            double civilianP90,
+            double emergencyP90,
+            double jainCivilian
     ) {
     }
 }

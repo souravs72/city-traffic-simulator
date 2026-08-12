@@ -2,6 +2,7 @@ package com.traffic.rules;
 
 import com.traffic.model.graph.Edge;
 import com.traffic.model.priority.CorridorBoard;
+import com.traffic.model.priority.PriorityMechanisms;
 import com.traffic.model.traffic.TrafficState;
 import com.traffic.model.vehicle.ServiceClass;
 import com.traffic.routing.EdgeCost;
@@ -10,8 +11,8 @@ import java.util.Objects;
 
 /**
  * Class-aware live edge cost.
- * Emergency fleets see a softer congestion penalty.
  * Hard corridors close edges; soft buffers tax lower-priority travelers away.
+ * Mechanism flags enable ablation of corridor vs soft-routing contributions.
  */
 public final class PriorityEdgeCost implements EdgeCost {
 
@@ -21,14 +22,14 @@ public final class PriorityEdgeCost implements EdgeCost {
     private final CorridorBoard corridors;
     private final ServiceClass traveler;
     private final int penaltyPerCar;
-    private final boolean honorPriority;
+    private final PriorityMechanisms mechanisms;
 
     public PriorityEdgeCost(
             TrafficState traffic,
             CorridorBoard corridors,
             ServiceClass traveler,
             int penaltyPerCar,
-            boolean honorPriority
+            PriorityMechanisms mechanisms
     ) {
         this.traffic = Objects.requireNonNull(traffic, "traffic");
         this.corridors = Objects.requireNonNull(corridors, "corridors");
@@ -37,7 +38,7 @@ public final class PriorityEdgeCost implements EdgeCost {
             throw new IllegalArgumentException("penaltyPerCar must be >= 0");
         }
         this.penaltyPerCar = penaltyPerCar;
-        this.honorPriority = honorPriority;
+        this.mechanisms = mechanisms == null ? PriorityMechanisms.none() : mechanisms;
     }
 
     public PriorityEdgeCost(
@@ -46,10 +47,23 @@ public final class PriorityEdgeCost implements EdgeCost {
             ServiceClass traveler,
             int penaltyPerCar,
             int worldTick,
+            PriorityMechanisms mechanisms
+    ) {
+        this(traffic, corridors, traveler, penaltyPerCar, mechanisms);
+        corridors.setCurrentTick(worldTick);
+    }
+
+    /** @deprecated Prefer {@link PriorityMechanisms}; retained for call-site migration. */
+    @Deprecated
+    public PriorityEdgeCost(
+            TrafficState traffic,
+            CorridorBoard corridors,
+            ServiceClass traveler,
+            int penaltyPerCar,
             boolean honorPriority
     ) {
-        this(traffic, corridors, traveler, penaltyPerCar, honorPriority);
-        corridors.setCurrentTick(worldTick);
+        this(traffic, corridors, traveler, penaltyPerCar,
+                honorPriority ? PriorityMechanisms.full() : PriorityMechanisms.none());
     }
 
     @Override
@@ -58,19 +72,18 @@ public final class PriorityEdgeCost implements EdgeCost {
         if (traffic.isClosed(edge.id())) {
             return CLOSED_COST;
         }
-        if (honorPriority && corridors.blocks(edge.id(), traveler)) {
+        if (mechanisms.corridorBlocking() && corridors.blocks(edge.id(), traveler)) {
             return CLOSED_COST;
         }
         int occ = traffic.occupancy(edge.id());
         int penalty = penaltyPerCar;
-        if (honorPriority && traveler.isEmergency()) {
-            // Strong preference for clear emergency paths — still sensitive to total gridlock.
+        if (mechanisms.softBufferRouting() && traveler.isEmergency()) {
             penalty = traveler.rank() >= ServiceClass.AMBULANCE.rank()
                     ? Math.max(0, penaltyPerCar / 4)
                     : Math.max(0, penaltyPerCar / 2);
         }
         int base = edge.baseWeight();
-        if (honorPriority) {
+        if (mechanisms.softBufferRouting()) {
             int soft = corridors.softMultiplier(edge.id(), traveler);
             if (soft > 1) {
                 base = base * soft;
