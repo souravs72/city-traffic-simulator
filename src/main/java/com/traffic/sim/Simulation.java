@@ -3,6 +3,7 @@ package com.traffic.sim;
 import com.traffic.invariant.Invariants;
 import com.traffic.model.graph.Edge;
 import com.traffic.model.graph.EdgeId;
+import com.traffic.model.signal.SignalNetwork;
 import com.traffic.model.traffic.TrafficState;
 import com.traffic.model.vehicle.Vehicle;
 import com.traffic.model.vehicle.VehiclePosition;
@@ -13,27 +14,40 @@ import java.util.Objects;
 /**
  * Single-threaded tick loop.
  * Phase A: advance cars already on edges.
- * Phase B: cars at nodes try to enter their next edge (capacity-limited).
+ * Phase B: cars at nodes try to enter next edge (light + capacity + closures).
+ * Phase C: advance traffic lights.
  */
 public final class Simulation {
 
     private final TrafficState traffic;
+    private final SignalNetwork signals;
     private final List<Vehicle> vehicles;
     private final int expectedFuelLedger;
     private final boolean checkInvariants;
     private int tick;
 
     public Simulation(TrafficState traffic, List<Vehicle> vehicles, int expectedFuelLedger) {
-        this(traffic, vehicles, expectedFuelLedger, true);
+        this(traffic, SignalNetwork.none(), vehicles, expectedFuelLedger, true);
     }
 
     public Simulation(
             TrafficState traffic,
+            SignalNetwork signals,
+            List<Vehicle> vehicles,
+            int expectedFuelLedger
+    ) {
+        this(traffic, signals, vehicles, expectedFuelLedger, true);
+    }
+
+    public Simulation(
+            TrafficState traffic,
+            SignalNetwork signals,
             List<Vehicle> vehicles,
             int expectedFuelLedger,
             boolean checkInvariants
     ) {
         this.traffic = Objects.requireNonNull(traffic, "traffic");
+        this.signals = Objects.requireNonNull(signals, "signals");
         this.vehicles = List.copyOf(Objects.requireNonNull(vehicles, "vehicles"));
         this.expectedFuelLedger = expectedFuelLedger;
         this.checkInvariants = checkInvariants;
@@ -53,6 +67,10 @@ public final class Simulation {
 
     public TrafficState traffic() {
         return traffic;
+    }
+
+    public SignalNetwork signals() {
+        return signals;
     }
 
     public boolean allArrived() {
@@ -81,7 +99,7 @@ public final class Simulation {
             }
         }
 
-        // Phase B — departures from nodes
+        // Phase B — departures (current light color applies)
         for (Vehicle vehicle : vehicles) {
             if (vehicle.arrived()) {
                 continue;
@@ -89,12 +107,15 @@ public final class Simulation {
             if (vehicle.position() instanceof VehiclePosition.AtNode
                     && vehicle.hasRemainingEdges()) {
                 EdgeId next = vehicle.peekNextEdge().orElseThrow();
-                if (traffic.tryEnter(next)) {
+                if (signals.isOpen(next) && traffic.tryEnter(next)) {
                     Edge edge = traffic.graph().requireEdge(next);
                     vehicle.enterEdge(next, edge.baseWeight());
                 }
             }
         }
+
+        // Phase C — advance lights after departures so initial GREEN is usable
+        signals.tick();
 
         tick++;
         if (checkInvariants) {
